@@ -114,6 +114,14 @@ You need an AWS account, plus [Homebrew](https://brew.sh) on a Mac.
    aws s3 cp s3://<IntakeBucketName>/reports/synthetic_discharges.csv.json -
    ```
 
+### Using this with another repository
+
+`cdk.json` names the repository allowed to deploy, together with GitHub's permanent owner and repository IDs. Repositories created after July 15, 2026 send these IDs when they sign in to AWS, in the form `repo:owner@<owner id>/name@<repo id>:ref:refs/heads/main`. To use the stack with a different repository, look up both IDs:
+
+```bash
+curl -s https://api.github.com/repos/<owner>/<name> | grep -E '"id"' | head -2   # repository ID, then owner ID
+```
+
 ### Tear it down
 
 ```bash

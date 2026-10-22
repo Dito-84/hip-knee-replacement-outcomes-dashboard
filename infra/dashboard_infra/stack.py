@@ -30,6 +30,22 @@ from .bundling import ARCHITECTURE, RUNTIME, data_check_code
 GITHUB_OIDC_URL = "https://token.actions.githubusercontent.com"
 
 
+def github_subjects(repo: str, branch: str, owner_id: str | None, repo_id: str | None) -> list[str]:
+    """The OIDC `sub` values GitHub can send for pushes to `branch` of `repo`.
+
+    Repositories created, renamed or transferred after July 15, 2026 identify
+    themselves with their permanent IDs as well as their names
+    ("repo:owner@123/name@456:ref:..."), so a different repository can't take
+    over the name later. Older repositories send "repo:owner/name:ref:...".
+    The role accepts the exact value for this repository in either format.
+    """
+    subjects = [f"repo:{repo}:ref:refs/heads/{branch}"]
+    if owner_id and repo_id:
+        owner, name = repo.split("/")
+        subjects.insert(0, f"repo:{owner}@{owner_id}/{name}@{repo_id}:ref:refs/heads/{branch}")
+    return subjects
+
+
 def _private_bucket(scope: Construct, id: str, **kwargs) -> s3.Bucket:
     """S3 bucket with every public-access block on, encryption at rest and TLS-only access."""
     return s3.Bucket(
@@ -44,6 +60,7 @@ def _private_bucket(scope: Construct, id: str, **kwargs) -> s3.Bucket:
 
 class DashboardStack(Stack):
     def __init__(self, scope: Construct, id: str, *, github_repo: str, github_branch: str = "main",
+                 github_owner_id: str | None = None, github_repo_id: str | None = None,
                  existing_oidc_provider_arn: str | None = None, alert_email: str | None = None,
                  monthly_budget_usd: int = 5, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
@@ -101,7 +118,7 @@ class DashboardStack(Stack):
                     "StringEquals": {
                         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                         "token.actions.githubusercontent.com:sub":
-                            f"repo:{github_repo}:ref:refs/heads/{github_branch}",
+                            github_subjects(github_repo, github_branch, github_owner_id, github_repo_id),
                     },
                 },
             ),

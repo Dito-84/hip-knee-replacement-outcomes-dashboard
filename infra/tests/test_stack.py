@@ -17,6 +17,8 @@ REPO = "Dito-84/hip-knee-replacement-outcomes-dashboard"
 
 def make_stack(**kwargs):
     app = cdk.App(context={"aws:cdk:bundling-stacks": []})
+    kwargs.setdefault("github_owner_id", "142613285")
+    kwargs.setdefault("github_repo_id", "1429165974")
     stack = DashboardStack(app, "Test", github_repo=REPO, env=cdk.Environment(region="us-east-1"), **kwargs)
     add_suppressions(stack)
     cdk.Aspects.of(app).add(AwsSolutionsChecks())
@@ -121,9 +123,20 @@ def test_only_main_branch_of_this_repo_can_assume_the_deploy_role(template):
     assert statement["Action"] == "sts:AssumeRoleWithWebIdentity"
     assert statement["Condition"]["StringEquals"] == {
         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-        "token.actions.githubusercontent.com:sub": f"repo:{REPO}:ref:refs/heads/main",
+        "token.actions.githubusercontent.com:sub": [
+            # Repos created after July 15, 2026 include GitHub's permanent owner and repository IDs
+            "repo:Dito-84@142613285/hip-knee-replacement-outcomes-dashboard@1429165974:ref:refs/heads/main",
+            f"repo:{REPO}:ref:refs/heads/main",
+        ],
     }
     assert role["Properties"]["MaxSessionDuration"] == 3600
+
+
+def test_without_ids_only_the_name_based_subject_is_trusted():
+    template = Template.from_stack(make_stack(github_owner_id=None, github_repo_id=None))
+    role = [r for k, r in template.find_resources("AWS::IAM::Role").items() if k.startswith("GitHubDeployRole")][0]
+    condition = role["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Condition"]["StringEquals"]
+    assert condition["token.actions.githubusercontent.com:sub"] == [f"repo:{REPO}:ref:refs/heads/main"]
 
 
 def test_deploy_role_can_only_sync_files_and_invalidate_the_cache(template):

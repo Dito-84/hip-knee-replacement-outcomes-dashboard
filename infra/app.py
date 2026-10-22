@@ -4,6 +4,8 @@
 Settings (pass with -c name=value, or edit cdk.json):
   github_repo                  owner/name of the repository allowed to deploy
   github_branch                branch allowed to deploy (default: main)
+  github_owner_id, github_repo_id
+                               GitHub's permanent IDs for the owner and repository (see infra/README.md)
   existing_oidc_provider_arn   set if the account already has a GitHub OIDC provider
   alert_email                  email for data-check results and budget alerts (optional)
   monthly_budget_usd           budget alert threshold, needs alert_email (default: 5)
@@ -22,6 +24,8 @@ stack = DashboardStack(
     app, "HipKneeDashboard",
     github_repo=ctx("github_repo"),
     github_branch=ctx("github_branch") or "main",
+    github_owner_id=str(ctx("github_owner_id") or "") or None,
+    github_repo_id=str(ctx("github_repo_id") or "") or None,
     existing_oidc_provider_arn=ctx("existing_oidc_provider_arn") or None,
     alert_email=ctx("alert_email") or None,
     monthly_budget_usd=int(ctx("monthly_budget_usd") or 5),

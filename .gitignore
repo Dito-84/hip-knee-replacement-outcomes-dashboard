@@ -1,0 +1,16 @@
+# Real data and anything built from it stay on your computer
+private/
+*.xlsx
+*.xls
+*.xlsm
+*.qvf
+
+# Build output (GitHub Actions rebuilds the public site from synthetic data)
+_site/
+
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+.DS_Store

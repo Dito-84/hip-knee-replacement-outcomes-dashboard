@@ -1,0 +1,8 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "github_repo": "Dito-84/hip-knee-replacement-outcomes-dashboard",
+    "github_branch": "main",
+    "region": "us-east-1"
+  }
+}

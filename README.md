@@ -57,6 +57,7 @@ Rebuilding the dashboard surfaced two issues in the original Qlik measures, both
 | `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, synthetic data |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
 | `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed |
+| `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda ([details](infra/README.md)) |
 
 ## Run it locally
 
@@ -93,10 +94,18 @@ With [dstoolkit](https://github.com/Dito-84/Data_Science_Toolkit) installed (`pi
 
 `build.py` refuses to write a build of real data anywhere except `private/` or outside the repository, and CI rejects any committed spreadsheet, so real results can't be published by accident. **Never commit patient data or screenshots of it.**
 
+## AWS hosting
+
+[`infra/`](infra/README.md) defines an AWS version of this site in AWS CDK (Python):
+- A private S3 bucket served through CloudFront, deployed from GitHub Actions through OIDC, so no AWS keys are stored in GitHub.
+- An S3-triggered Lambda that runs the data-quality checks on an uploaded file and emails a summary.
+
+It includes least-privilege IAM, automated cdk-nag security checks in CI, and a budget alert. Its README explains the design choices and what would change for real patient data.
+
 ## Synthetic data
 
 `outcomes/synthetic.py` generates 4,000 fictional surgeries across three fictional hospitals (2018–2021). Volumes and rates follow published national patterns for Medicare hip and knee replacement: a complication rate around 3%, length of stay falling each year, and the 2020 elective surgery pause. No values are derived from real patient records. Year-to-year swings in the charts are random noise, not findings.
 
 ## Built with
 
-Python (pandas, NumPy), Plotly.js, pytest, GitHub Actions and GitHub Pages.
+Python (pandas, NumPy), Plotly.js, pytest, GitHub Actions and GitHub Pages; on AWS, CDK, S3, CloudFront, Lambda, SNS and IAM (OIDC).

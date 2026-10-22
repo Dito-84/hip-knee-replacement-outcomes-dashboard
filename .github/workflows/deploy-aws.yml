@@ -1,0 +1,50 @@
+name: Deploy to AWS
+
+# Builds the dashboard from the synthetic dataset and publishes it to the S3 +
+# CloudFront site defined in infra/. GitHub signs in to AWS through OIDC, so no
+# AWS keys are stored here.
+#
+# Skips itself until the repository variable AWS_DEPLOY_ROLE_ARN is set
+# (see infra/README.md), so it does nothing before the AWS stack exists.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # lets the job request the OIDC token AWS checks
+
+concurrency:
+  group: aws-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ vars.AWS_DEPLOY_ROLE_ARN != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/check_no_real_data.py
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python build.py --out _site
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Upload the site
+        run: aws s3 sync _site "s3://${{ vars.AWS_SITE_BUCKET }}" --delete --no-progress
+
+      - name: Clear the CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.AWS_DISTRIBUTION_ID }}" --paths "/*" \
+            --query 'Invalidation.Id' --output text

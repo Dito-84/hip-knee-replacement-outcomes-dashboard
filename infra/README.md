@@ -125,7 +125,7 @@ The three buckets are kept on purpose. To remove them, open each one in the S3 c
 ## Tests
 
 ```bash
-pip install -r ../requirements.txt -r requirements.txt pytest
+pip install -r requirements-dev.txt
 pytest tests            # template and security checks, plus the Lambda logic against synthetic data (seconds)
 pytest tests --bundle   # also builds the real Lambda package and runs it in a clean interpreter
 npx aws-cdk@2 synth     # full CloudFormation template; fails on any unexplained cdk-nag finding

@@ -42,10 +42,11 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             infra/requirements.txt
+            infra/requirements-dev.txt
             infra/lambda/data_check/requirements.txt
 
       - name: Install
-        run: pip install -r requirements.txt -r infra/requirements.txt pytest
+        run: pip install -r infra/requirements-dev.txt
 
       - name: Infrastructure and Lambda tests
         run: pytest -v infra/tests --bundle

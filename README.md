@@ -6,9 +6,26 @@ An interactive dashboard of complications, complication readmissions and length 
 
 **[Open the live dashboard →](https://dito-84.github.io/hip-knee-replacement-outcomes-dashboard/)**
 
-> **All data in this repository is synthetic.** The dashboard was originally built in Qlik Sense on de-identified hospital discharge data, which is not included here and never leaves the analyst's computer. This version is rebuilt in Python and runs on a randomly generated dataset with the same structure, so it can be shared publicly.
+> **All data in this repository is synthetic.** The original dashboard was built in Qlik Sense on de-identified hospital discharge data, which is not included here and never leaves the analyst's computer. This version is rebuilt in Python and runs on a randomly generated dataset with the same structure, so it can be shared publicly. Hospital names, counts and rates on the live page are fictional.
 
 ![Dashboard screenshot](docs/dashboard.png)
+
+## Background
+
+This is a public rebuild of the dashboard I created for the **ACE Project**, an analysis of the data behind the CMS **Risk-Standardized Complication Rate (RSCR)** following total hip and knee replacement at a regional health system. The RSCR is publicly reported and feeds into CMS quality programs and reimbursement, so understanding what drives it matters both clinically and financially.
+
+The goal was to help clinical and administrative decision-makers pinpoint the **procedures, patient groups and hospitals with the highest complication risk**, so they could target protocol changes and preventive measures where they would have the most effect.
+
+I taught myself Qlik Sense for the project and delivered:
+
+- **An interactive Qlik Sense application** (26 sheets, about 80 measures) covering admissions, complications by type, complication readmissions, length of stay, age and mortality, each viewable with and without CMS exclusions
+- **An "Important Observations" document** interpreting the visualizations
+- **An executive summary** in PowerPoint distilling the key findings for leadership
+- **A 16-page formula sheet and glossary** defining every measure and term
+- **An Excel workbook of 75 odds-ratio tables and 68 supporting tables** quantifying how complication risk varied across patient and procedure characteristics
+- **A visualization bank** giving offline access to every chart
+
+The original application and its patient-level data stay private. This repository rebuilds the core dashboard in Python on synthetic data, corrects two measure definitions found during the rebuild (see [How the measures are counted](#how-the-measures-are-counted)), and adds automated tests.
 
 ## What it shows
 
@@ -22,7 +39,7 @@ Filter by hospital, by procedure (hip or knee), and by population: all surgeries
 
 ## How the measures are counted
 
-Rebuilding the dashboard fixed two issues in the original Qlik version:
+Rebuilding the dashboard surfaced two issues in the original Qlik measures, both fixed here:
 
 1. **Rates are per surgery, not per row.** A patient with two complications appears on two records. The original measures counted records, which inflated the denominator and understated every rate. Records are now collapsed to one row per index stay first ([`outcomes/metrics.py`](outcomes/metrics.py)).
 2. **Readmissions are labelled correctly.** The data only records readmissions *for a complication*, so the measure is "30-day complication readmission", not the CMS all-cause readmission rate.

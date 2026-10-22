@@ -4,7 +4,7 @@
 
 An interactive dashboard of complications, complication readmissions and length of stay after **total hip arthroplasty (THA)** and **total knee arthroplasty (TKA)**, built on the CMS risk-standardized complication measure definitions.
 
-**[Open the live dashboard →](https://dito-84.github.io/hip-knee-replacement-outcomes-dashboard/)**
+**[Open the live dashboard →](https://dito-84.github.io/hip-knee-replacement-outcomes-dashboard/)** · also deployed on AWS: **[S3 + CloudFront version →](https://d12lu6oeqxy46k.cloudfront.net)**
 
 > **All data in this repository is synthetic.** The original dashboard was built in Qlik Sense on de-identified hospital discharge data, which is not included here and never leaves the analyst's computer. This version is rebuilt in Python and runs on a randomly generated dataset with the same structure, so it can be shared publicly. Hospital names, counts and rates on the live page are fictional.
 
@@ -96,7 +96,7 @@ With [dstoolkit](https://github.com/Dito-84/Data_Science_Toolkit) installed (`pi
 
 ## AWS hosting
 
-[`infra/`](infra/README.md) defines an AWS version of this site in AWS CDK (Python):
+[`infra/`](infra/README.md) defines the [AWS version of this site](https://d12lu6oeqxy46k.cloudfront.net) in AWS CDK (Python):
 - A private S3 bucket served through CloudFront, deployed from GitHub Actions through OIDC, so no AWS keys are stored in GitHub.
 - An S3-triggered Lambda that runs the data-quality checks on an uploaded file and emails a summary.
 

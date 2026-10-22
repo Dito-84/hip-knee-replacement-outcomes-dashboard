@@ -25,6 +25,9 @@ updates:
       # cdk-nag 3 replaced the Aspects API this stack uses with validation plugins;
       # stay on 2.x until the stack is migrated
       - dependency-name: "cdk-nag"
-        update-types: ["version-update:semver-major"]
+        versions: [">=3"]
+    # Ranges like "pandas>=2.0" only change when a new release falls outside them;
+    # exact pins (the Lambda's ==) are still updated
+    versioning-strategy: increase-if-necessary
     commit-message:
       prefix: "deps"

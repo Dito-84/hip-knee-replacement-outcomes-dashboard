@@ -21,5 +21,10 @@ updates:
     groups:
       python:
         patterns: ["*"]
+    ignore:
+      # cdk-nag 3 replaced the Aspects API this stack uses with validation plugins;
+      # stay on 2.x until the stack is migrated
+      - dependency-name: "cdk-nag"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps"

@@ -1,0 +1,4 @@
+# Optional: the full data profile in scripts/check_data.py.
+# Pinned to a tested version of dstoolkit so later changes to it can't affect this project.
+# The dashboard itself, its tests and the public site never need it.
+dstoolkit @ git+https://github.com/Dito-84/Data_Science_Toolkit@378d9d38282666cc9937e1a21cb3b58c34e781f5

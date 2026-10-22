@@ -55,6 +55,7 @@ Rebuilding the dashboard surfaced two issues in the original Qlik measures, both
 | `dashboard/template.html` | The dashboard page (Plotly.js), filled with precomputed data at build time |
 | `build.py` | Builds a single self-contained `index.html` |
 | `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, synthetic data |
+| `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
 | `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed |
 
 ## Run it locally
@@ -77,6 +78,18 @@ cp ~/Downloads/<your file>.xlsx private/
 python build.py --data private/<your file>.xlsx --out private/site
 open private/site/index.html
 ```
+
+### Check the file first
+
+Before building from a real export, check it for problems that would quietly distort the measures:
+
+```bash
+python scripts/check_data.py private/<your file>.xlsx
+```
+
+It checks for discharges before admissions, readmissions dated before discharge, implausible ages, missing birth dates, records with no procedure, unnamed complications, and duplicate rows that aren't flagged as additional complication records. It exits with an error if any finding would make the measures wrong.
+
+With [dstoolkit](https://github.com/Dito-84/Data_Science_Toolkit) installed (`pip install -r requirements-optional.txt`), it also writes a full profile of every column to `private/data_check.html`. Blank complication, readmission and death fields mean "didn't happen" in this data, so the profile is told not to suggest filling or dropping them. The report contains record-level details: it's only ever written inside `private/`, and it should stay on your computer.
 
 `build.py` refuses to write a build of real data anywhere except `private/` or outside the repository, and CI rejects any committed spreadsheet, so real results can't be published by accident. **Never commit patient data or screenshots of it.**
 

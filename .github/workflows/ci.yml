@@ -27,3 +27,30 @@ jobs:
 
       - name: Build the dashboard from synthetic data
         run: python build.py
+
+  infra:
+    # AWS hosting (infra/): template security checks, data-check Lambda tests, and a full CDK synth.
+    # Needs no AWS account: nothing is deployed here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            infra/requirements.txt
+            infra/requirements-dev.txt
+            infra/lambda/data_check/requirements.txt
+
+      - name: Install
+        run: pip install -r infra/requirements-dev.txt
+
+      - name: Infrastructure and Lambda tests
+        run: pytest -v infra/tests --bundle
+
+      - name: CDK synth (fails on any unexplained cdk-nag security finding)
+        working-directory: infra
+        run: npx --yes aws-cdk@2 synth --quiet

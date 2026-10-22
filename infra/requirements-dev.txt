@@ -1,0 +1,5 @@
+# For the tests only: boto3 is built into the Lambda runtime, so it isn't bundled
+-r requirements.txt
+-r ../requirements.txt
+boto3
+pytest

@@ -117,6 +117,10 @@ def generate(n_stays=TOTAL_STAYS, seed=SEED):
 
         excluded = rng.random() < 0.10
         inclusion = rng.choice(EXCLUSION_REASONS) if excluded else "Included"
+        if age < 65:
+            # The CMS cohort is Medicare beneficiaries 65 and older. Set after the random
+            # draws, so the random sequence (and every other synthetic value) is unchanged.
+            excluded, inclusion = True, "Excluded: under 65"
 
         risk = BASE_COMPLICATION_RATE * HOSPITALS[hospital][1] * (1 + 0.035 * max(0, age - 70))
         if n_tka + n_tha > 1:

@@ -376,3 +376,41 @@ def test_synthetic_in_stay_complications_lengthen_the_stay():
     stays, comps = build_stays(load(ROOT / "data" / "synthetic_discharges.csv"))
     los = dict(zip(*[summarize(stays, comps)["los_by_status"][k] for k in ("status", "avg_los")]))
     assert los["Complication during stay"] > los["No complication"] + 1
+
+
+# ---------- build-time data checks ----------
+
+def test_readmission_before_discharge_is_not_a_30_day_readmission(tmp_path):
+    # Discharged March 3; a readmission dated March 1 is a data error, not day -2.
+    stays, comps = _load_rows(tmp_path, [
+        stay(dob="01/01/1950", had_complication="Yes", complication="Infection",
+             during_index_stay="No", complication_admit_date="03/01/2020"),
+        stay(dob="02/02/1950"),
+    ])
+    k = summarize(stays, comps)["kpis"]
+    assert k["readmit30"] == 0
+    assert k["complications"] == 1          # still a complication, just not a valid readmission
+
+
+def test_build_stops_on_data_errors_unless_skipped(tmp_path, capsys):
+    import build
+    path = tmp_path / "bad.csv"
+    make_records([
+        stay(dob="01/01/1950", had_complication="Yes", complication="Infection",
+             during_index_stay="No", complication_admit_date="03/01/2020"),
+        stay(dob="02/02/1950"),
+    ]).to_csv(path, index=False)
+    out = tmp_path / "site"
+    with pytest.raises(SystemExit) as stopped:
+        build.main(["--data", str(path), "--out", str(out)])
+    assert "Stopped" in str(stopped.value)
+    assert not (out / "index.html").exists()
+    build.main(["--data", str(path), "--out", str(out), "--skip-checks"])
+    assert (out / "index.html").exists()
+
+
+def test_synthetic_under_65_are_excluded():
+    stays, _ = build_stays(load(ROOT / "data" / "synthetic_discharges.csv"))
+    under = stays[stays["age"] < 65]
+    assert len(under) > 0
+    assert under["excluded"].all()

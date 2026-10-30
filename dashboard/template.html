@@ -108,7 +108,8 @@
   <section class="grid">
     <div class="card wide">
       <h2>Volume and complication rate by year</h2>
-      <p class="note">Bars: surgeries (left axis). Line: share with a complication (right axis).</p>
+      <p class="note">Bars: surgeries (left axis). Line: share with a complication (right axis); shaded band: 95% confidence
+        interval for each year. Overlapping bands mean the change could easily be chance.</p>
       <div class="chart" id="c-year"></div>
     </div>
     <div class="card">
@@ -157,7 +158,8 @@
     <div class="card wide">
       <h2>Hip vs knee: odds of each complication</h2>
       <p class="note">Odds ratio, hip ÷ knee, with 95% confidence interval (log scale). Above 1 means higher odds
-        after a hip replacement. Unadjusted; ignores the procedure filter and leaves out surgeries with both.</p>
+        after a hip replacement. Circles: unadjusted. Diamonds: adjusted for age group (Mantel-Haenszel).
+        Ignores the procedure filter and leaves out surgeries with both.</p>
       <div class="chart" id="c-odds"></div>
     </div>
     <div class="card wide">
@@ -181,7 +183,8 @@
         complications ÷ surgeries, so hospitals with older or sicker patients look worse. The observed-vs-expected
         chart adjusts for age group and procedure only.</li>
       <li><strong>Odds ratios</strong> compare the odds of a complication after a hip replacement with the odds after
-        a knee replacement (2×2 table, Woolf 95% interval; 0.5 is added to every cell when one is zero).</li>
+        a knee replacement (2×2 table, Woolf 95% interval; 0.5 is added to every cell when one is zero). The age-adjusted
+        version pools one table per age group (Mantel-Haenszel, Robins-Breslow-Greenland interval).</li>
       <li>Complication windows follow CMS: AMI, pneumonia and sepsis within 7 days; surgical site bleeding,
         pulmonary embolism and death within 30 days; mechanical complications and infection within 90 days.</li>
     </ul>
@@ -213,7 +216,8 @@ function banner() {
       "hip and knee replacement data. No real patients or hospitals are represented."
     : "<strong>Private data:</strong> " + DATA.source + ". This build is for local use only; do not publish it.";
   document.getElementById("source-note").textContent =
-    `${num(DATA.records)} records, admissions ${DATA.date_range[0]} – ${DATA.date_range[1]}.`;
+    `${num(DATA.records)} records, admissions ${DATA.date_range[0]} – ${DATA.date_range[1]}.` +
+    (DATA.suppressed_under ? ` Counts of 1 to ${DATA.suppressed_under - 1}, and figures computed from them, are hidden (shown as –).` : "");
 }
 
 function buildFilters() {
@@ -272,9 +276,14 @@ function render() {
   Plotly.react("c-year", [
     { type: "bar", x: v.by_year.year, y: v.by_year.stays, marker: { color: bar }, name: "Surgeries",
       hovertemplate: "%{x}: %{y:,} surgeries<extra></extra>" },
+    { type: "scatter", mode: "lines", x: v.by_year.year, y: v.by_year.complication_ci.map(c => c[1]), yaxis: "y2",
+      line: { width: 0 }, hoverinfo: "skip", showlegend: false },
+    { type: "scatter", mode: "lines", x: v.by_year.year, y: v.by_year.complication_ci.map(c => c[0]), yaxis: "y2",
+      line: { width: 0 }, fill: "tonexty", fillcolor: "rgba(37, 99, 235, 0.15)", hoverinfo: "skip", showlegend: false },
     { type: "scatter", mode: "lines+markers", x: v.by_year.year, y: v.by_year.complication_rate, yaxis: "y2",
+      customdata: v.by_year.complication_ci,
       line: { color: accent, width: 3 }, marker: { size: 8 }, name: "Complication rate",
-      hovertemplate: "%{x}: %{y:.1%} complication rate<extra></extra>" },
+      hovertemplate: "%{x}: %{y:.1%} complication rate<br>95% CI %{customdata[0]:.1%} – %{customdata[1]:.1%}<extra></extra>" },
   ], layout({ xaxis: { type: "category", tickfont: { color: muted } },
               yaxis2: rateAxis({ overlaying: "y", side: "right" }), margin: { l: 48, r: 56, t: 8, b: 32 } }), CONFIG);
 
@@ -345,15 +354,22 @@ function render() {
   }], layout({ xaxis: { type: "category", tickfont: { color: muted } }, yaxis: { rangemode: "tozero", gridcolor: css("--line"), zeroline: false, title: { text: "Days", font: { size: 12 } } } }), CONFIG);
 
   const od = v.hip_vs_knee.filter(r => r.odds_ratio != null);
-  Plotly.react("c-odds", [{
-    type: "scatter", mode: "markers", y: od.map(r => r.type), x: od.map(r => r.odds_ratio),
-    marker: { size: 10, color: od.map(r => r.type === "Any complication" ? warn : accent) },
-    error_x: { type: "data", symmetric: false, thickness: 2, width: 5, color: muted,
-               array: od.map(r => r.ci[1] - r.odds_ratio), arrayminus: od.map(r => r.odds_ratio - r.ci[0]) },
-    customdata: od.map(r => [r.hip, r.hip_n, r.knee, r.knee_n, r.ci[0], r.ci[1]]),
-    hovertemplate: "%{y}: OR %{x:.2f}<br>Hip %{customdata[0]} of %{customdata[1]:,} · Knee %{customdata[2]} of %{customdata[3]:,}" +
-      "<br>95% CI %{customdata[4]:.2f} – %{customdata[5]:.2f}<extra></extra>",
-  }], layout({ margin: { l: 168, r: 24, t: 8, b: 40 },
+  const om = v.hip_vs_knee.filter(r => r.age_adjusted_odds_ratio != null);
+  const bars = (rows, est, ci) => ({ type: "data", symmetric: false, thickness: 2, width: 5, color: muted,
+    array: rows.map(r => r[ci][1] - r[est]), arrayminus: rows.map(r => r[est] - r[ci][0]) });
+  Plotly.react("c-odds", [
+    { type: "scatter", mode: "markers", name: "Unadjusted", y: od.map(r => r.type), x: od.map(r => r.odds_ratio),
+      offsetgroup: "u", marker: { size: 10, color: od.map(r => r.type === "Any complication" ? warn : accent) },
+      error_x: bars(od, "odds_ratio", "ci"),
+      customdata: od.map(r => [r.hip, r.hip_n, r.knee, r.knee_n, r.ci[0], r.ci[1]]),
+      hovertemplate: "%{y}: OR %{x:.2f} (unadjusted)<br>Hip %{customdata[0]} of %{customdata[1]:,} · Knee %{customdata[2]} of %{customdata[3]:,}" +
+        "<br>95% CI %{customdata[4]:.2f} – %{customdata[5]:.2f}<extra></extra>" },
+    { type: "scatter", mode: "markers", name: "Age-adjusted", y: om.map(r => r.type), x: om.map(r => r.age_adjusted_odds_ratio),
+      marker: { size: 18, symbol: "diamond-open", color: muted, line: { width: 1.5 } },
+      error_x: Object.assign(bars(om, "age_adjusted_odds_ratio", "age_adjusted_ci"), { color: "rgba(0,0,0,0)" }),
+      customdata: om.map(r => r.age_adjusted_ci),
+      hovertemplate: "%{y}: OR %{x:.2f} (age-adjusted)<br>95% CI %{customdata[0]:.2f} – %{customdata[1]:.2f}<extra></extra>" },
+  ], layout({ margin: { l: 168, r: 24, t: 8, b: 40 }, showlegend: true, legend: { orientation: "h", y: -0.15 },
                xaxis: { type: "log", gridcolor: css("--line"), zeroline: false,
                         tickvals: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20], ticktext: ["0.05", "0.1", "0.2", "0.5", "1", "2", "5", "10", "20"] },
                yaxis: { autorange: "reversed", gridcolor: "rgba(0,0,0,0)" },

@@ -10,6 +10,9 @@ A build from any file other than the synthetic dataset must be written
 inside private/ (which git ignores) or outside this repository, so real
 results can't be committed by accident.
 
+To share a build, hide small counts (CMS doesn't allow publishing counts of 1 to 10):
+    python build.py --data private/discharges.xlsx --out private/site --suppress-under 11
+
 Every build runs the data-quality checks in outcomes/quality.py first and
 stops if one finds an error that would make the measures wrong. Use
 --skip-checks only after reviewing the findings with scripts/check_data.py.
@@ -23,6 +26,7 @@ from pathlib import Path
 from outcomes.load import DataFormatError, load
 from outcomes.metrics import build_dashboard_data
 from outcomes.quality import run_checks
+from outcomes.suppression import suppress
 
 ROOT = Path(__file__).resolve().parent
 SYNTHETIC = ROOT / "data" / "synthetic_discharges.csv"
@@ -42,6 +46,9 @@ def main(argv=None):
     parser.add_argument("--sheet", help="Excel sheet name (default: first sheet with the expected headers)")
     parser.add_argument("--out", type=Path, default=ROOT / "_site", help="output folder")
     parser.add_argument("--label", help="description shown in the page banner for non-synthetic data")
+    parser.add_argument("--suppress-under", type=int, default=0, metavar="N",
+                        help="hide counts of 1 to N-1 and figures computed from them; use 11 for any build "
+                             "meant to be shared (CMS cell-size rule). Default: off")
     parser.add_argument("--skip-checks", action="store_true",
                         help="build even if a data-quality check finds an error (not recommended)")
     args = parser.parse_args(argv)
@@ -66,6 +73,8 @@ def main(argv=None):
 
     label = "synthetic" if synthetic else (args.label or f"{args.data.name}")
     data = build_dashboard_data(records, label)
+    if args.suppress_under > 1:
+        data = suppress(data, args.suppress_under)
 
     html = TEMPLATE.read_text(encoding="utf-8")
     if PLACEHOLDER not in html:

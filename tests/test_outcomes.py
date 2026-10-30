@@ -5,8 +5,9 @@ import pytest
 
 from outcomes import synthetic
 from outcomes.load import DataFormatError, load
-from outcomes.metrics import (build_dashboard_data, build_stays, hip_vs_knee_odds, hospital_table, odds_ratio,
-                              poisson_ratio_interval, summarize, wilson_interval)
+from outcomes.metrics import (build_dashboard_data, build_stays, hip_vs_knee_odds, hospital_table, mantel_haenszel,
+                              odds_ratio, poisson_ratio_interval, summarize, wilson_interval)
+from outcomes.suppression import suppress
 from outcomes.schema import COLUMNS, match_headers
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -414,3 +415,78 @@ def test_synthetic_under_65_are_excluded():
     under = stays[stays["age"] < 65]
     assert len(under) > 0
     assert under["excluded"].all()
+
+
+# ---------- age-adjusted (Mantel-Haenszel) odds ratio ----------
+
+def test_mantel_haenszel_removes_confounding_by_age():
+    # Within each age group hips and knees have the same odds (OR 1), but hips are mostly older,
+    # and older patients have more complications.
+    young = (1, 9, 4, 36)       # hips 1/10, knees 4/40 -> OR (1*36)/(9*4) = 1
+    old = (20, 20, 5, 5)        # hips 20/40, knees 5/10 -> OR (20*5)/(20*5) = 1
+    crude = odds_ratio(21, 29, 9, 41)[0]          # pooled: (21*41)/(29*9) = 3.30
+    assert crude == pytest.approx(861 / 261)
+    assert mantel_haenszel([young, old])[0] == pytest.approx(1.0)
+
+
+def test_mantel_haenszel_with_one_stratum_matches_woolf():
+    assert mantel_haenszel([(10, 90, 5, 95)]) == pytest.approx(odds_ratio(10, 90, 5, 95))
+    assert mantel_haenszel([(0, 10, 0, 10)]) == (None, None, None)
+
+
+def test_hip_vs_knee_age_adjusted(tmp_path):
+    # Hips: two 80-year-olds, one complication. Knees: two 80-year-olds (one complication), two 66-year-olds (none).
+    # Crude 2x2 = 1, 1, 1, 3 -> OR 3.0. Within the 80-84 group hips and knees are both 1 of 2 -> age-adjusted OR 1.0.
+    stays, comps = _load_rows(tmp_path, [
+        _comp(dob="01/01/1940", tka=0, tha=1), stay(dob="01/02/1940", tka=0, tha=1),
+        _comp(dob="01/03/1940"), stay(dob="01/04/1940"),
+        stay(dob="01/01/1954"), stay(dob="01/02/1954"),
+    ])
+    anyc = {r["type"]: r for r in hip_vs_knee_odds(stays, comps)}["Any complication"]
+    assert anyc["odds_ratio"] == pytest.approx(3.0)
+    assert anyc["age_adjusted_odds_ratio"] == pytest.approx(1.0)
+
+
+# ---------- year trend interval ----------
+
+def test_year_trend_has_a_confidence_interval(tmp_path):
+    stays, comps = _load_rows(tmp_path, [_comp(dob="01/01/1950")] + [stay(dob=f"02/{d:02d}/1950") for d in range(1, 4)])
+    y = summarize(stays, comps)["by_year"]
+    assert y["complications"] == [1] and y["complication_rate"] == [pytest.approx(0.25)]
+    assert y["complication_ci"][0] == list(wilson_interval(1, 4))
+
+
+# ---------- small-cell suppression ----------
+
+def _suppression_case(tmp_path):
+    # 15 surgeries at one hospital: 3 with an infection, none with a death.
+    rows = [_comp(dob=f"01/{d:02d}/1950") for d in range(1, 4)] + [stay(dob=f"02/{d:02d}/1950") for d in range(1, 13)]
+    path = tmp_path / "case.csv"
+    make_records(rows).to_csv(path, index=False)
+    return build_dashboard_data(load(path), "test")
+
+
+def test_suppression_hides_counts_of_1_to_10_and_what_is_computed_from_them(tmp_path):
+    data = _suppression_case(tmp_path)
+    hidden = suppress(data, 11)
+    k = hidden["views"]["All|All|all"]["kpis"]
+    assert k["stays"] == 15                                     # 11 or more: shown
+    assert k["complications"] is None and k["complication_rate"] is None
+    assert k["deaths"] == 0 and k["mortality_rate"] == 0.0      # zero is shown
+    types = {r["type"]: r for r in hidden["views"]["All|All|all"]["rate_by_type"]}
+    assert types["Infection"]["stays"] is None and types["Infection"]["ci"] == [None, None]
+    assert types["AMI"]["stays"] == 0
+    row = hidden["views"]["__hospitals__|All|all"][0]
+    assert row["hospital"] == "Hospital A"
+    assert row["complications"] is None and row["oe_ratio"] is None and row["complication_ci"] == [None, None]
+    assert hidden["suppressed_under"] == 11
+    assert data["views"]["All|All|all"]["kpis"]["complications"] == 3     # the original is untouched
+
+
+def test_build_suppress_flag(tmp_path):
+    import build
+    path = tmp_path / "case.csv"
+    make_records([_comp(dob=f"01/{d:02d}/1950") for d in range(1, 4)] +
+                 [stay(dob=f"02/{d:02d}/1950") for d in range(1, 13)]).to_csv(path, index=False)
+    build.main(["--data", str(path), "--out", str(tmp_path / "site"), "--suppress-under", "11"])
+    assert '"suppressed_under":11' in (tmp_path / "site" / "index.html").read_text()

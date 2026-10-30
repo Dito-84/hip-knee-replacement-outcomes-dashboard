@@ -44,6 +44,7 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
   - The Lambda can read `incoming/`, write `reports/`, publish to its topic and write its own logs. It uses no AWS managed policies.
 - **Automated security review:** [cdk-nag](https://github.com/cdklabs/cdk-nag) runs the AWS Solutions rule pack on every synth and in CI. The few rules that don't apply are documented with reasons in [`nag.py`](dashboard_infra/nag.py). Any other finding fails the build.
 - The data check's reports and emails contain only counts and check names, never values from the file. A test checks this.
+- **The page itself** carries a Content-Security-Policy (built into the HTML, so the GitHub Pages copy has it too). It allows only the page's own script, by hash, and the chart library from jsDelivr, pinned by a subresource-integrity hash that CI checks against the CDN. A tampered library or an injected script won't run.
 
 **Reliable**
 - S3 and CloudFront are managed, multi-Availability-Zone services, and there are no servers to patch.

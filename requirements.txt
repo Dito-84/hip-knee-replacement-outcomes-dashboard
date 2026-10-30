@@ -1,3 +1,19 @@
-pandas>=2.0
-numpy>=1.24
-openpyxl>=3.1
+# Exact versions for CI, the deploy workflows and local builds. Generated from pyproject.toml:
+#   uv pip compile pyproject.toml --python-version 3.12 -o requirements.txt
+# Dependabot proposes updates monthly. Keep numpy/pandas in step with infra/lambda/data_check/requirements.txt.
+et-xmlfile==2.0.0
+    # via openpyxl
+numpy==2.5.4
+    # via
+    #   hip-knee-outcomes (pyproject.toml)
+    #   pandas
+openpyxl==3.1.5
+    # via hip-knee-outcomes (pyproject.toml)
+pandas==3.1.0
+    # via hip-knee-outcomes (pyproject.toml)
+python-dateutil==2.9.0.post0
+    # via
+    #   hip-knee-outcomes (pyproject.toml)
+    #   pandas
+six==1.17.0
+    # via python-dateutil

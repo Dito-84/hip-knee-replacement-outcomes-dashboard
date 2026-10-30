@@ -32,7 +32,7 @@ STRIP = ["pandas/tests", "numpy/*/tests", "numpy/tests", "**/__pycache__"]
 
 def _source_files():
     files = [p for p in HANDLER_DIR.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
-    files += [p for p in OUTCOMES_DIR.glob("*.py")]
+    files += list(OUTCOMES_DIR.glob("*.py"))
     return sorted(files)
 
 

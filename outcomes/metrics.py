@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .schema import COMPLICATION_TYPES
+from .stats import mantel_haenszel, odds_ratio, poisson_ratio_interval, wilson_interval
 
 AGE_BINS = [0, 65, 70, 75, 80, 85, 200]
 AGE_LABELS = ["Under 65", "65–69", "70–74", "75–79", "80–84", "85+"]
@@ -117,17 +118,6 @@ def _mean(series):
     return None if series.empty else float(series.mean())
 
 
-def wilson_interval(successes, n, z=1.96):
-    """95% confidence interval for a proportion (stable for small counts)."""
-    if n == 0:
-        return None, None
-    p = successes / n
-    denom = 1 + z**2 / n
-    center = (p + z**2 / (2 * n)) / denom
-    half = z * np.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
-    return float(max(0.0, center - half)), float(min(1.0, center + half))
-
-
 def kpis(s, population):
     n = len(s)
     readmit = s[f"readmit_days_{population}"]
@@ -190,45 +180,6 @@ def los_by_status(s, c):
     return {"status": LOS_STATUS,
             "stays": [int(counts.get(k, 0)) for k in LOS_STATUS],
             "avg_los": [None if k not in means else float(means[k]) for k in LOS_STATUS]}
-
-
-def odds_ratio(a, b, c, d, z=1.96):
-    """Odds ratio for a 2x2 table with a 95% CI (Woolf's log method).
-
-    a, b: exposed with / without the outcome; c, d: unexposed with / without.
-    If any cell is zero, 0.5 is added to every cell (Haldane-Anscombe correction).
-    """
-    if min(a + b, c + d) == 0 or min(a + c, b + d) == 0:
-        return None, None, None
-    if 0 in (a, b, c, d):
-        a, b, c, d = a + 0.5, b + 0.5, c + 0.5, d + 0.5
-    ratio = (a * d) / (b * c)
-    se = np.sqrt(1 / a + 1 / b + 1 / c + 1 / d)
-    return float(ratio), float(np.exp(np.log(ratio) - z * se)), float(np.exp(np.log(ratio) + z * se))
-
-
-def mantel_haenszel(tables, z=1.96):
-    """Odds ratio pooled across strata, with a 95% CI (Mantel-Haenszel, Robins-Breslow-Greenland variance).
-
-    `tables` is a list of (a, b, c, d) 2x2 tables, one per stratum, laid out as in
-    odds_ratio(). Strata with fewer than two people add nothing. Returns
-    (None, None, None) when the pooled ratio is undefined (no discordant information).
-    """
-    sum_r = sum_s = sum_pr = sum_ps_qr = sum_qs = 0.0
-    for a, b, c, d in tables:
-        n = a + b + c + d
-        if n < 2:
-            continue
-        r, s_ = a * d / n, b * c / n
-        p, q = (a + d) / n, (b + c) / n
-        sum_r += r; sum_s += s_
-        sum_pr += p * r; sum_ps_qr += p * s_ + q * r; sum_qs += q * s_
-    if sum_r == 0 or sum_s == 0:
-        return None, None, None
-    ratio = sum_r / sum_s
-    var = sum_pr / (2 * sum_r ** 2) + sum_ps_qr / (2 * sum_r * sum_s) + sum_qs / (2 * sum_s ** 2)
-    se = np.sqrt(var)
-    return float(ratio), float(np.exp(np.log(ratio) - z * se)), float(np.exp(np.log(ratio) + z * se))
 
 
 def hip_vs_knee_odds(stays, comps, hospital="All", population="all"):
@@ -332,16 +283,6 @@ def expected_complications(reference, target, population):
     return float(strata(target).map(rates).fillna(reference[flag].mean()).sum())
 
 
-def poisson_ratio_interval(observed, expected, z=1.96):
-    """95% interval for observed/expected, treating observed as Poisson (Byar's approximation)."""
-    if expected == 0:
-        return None, None
-    o = observed
-    low = 0.0 if o == 0 else o * (1 - 1 / (9 * o) - z / (3 * np.sqrt(o))) ** 3
-    high = (o + 1) * (1 - 1 / (9 * (o + 1)) + z / (3 * np.sqrt(o + 1))) ** 3
-    return float(low / expected), float(high / expected)
-
-
 def hospital_table(stays, procedure="All", population="all"):
     """Side-by-side comparison of hospitals (ignores the hospital filter).
 
@@ -377,7 +318,8 @@ def build_dashboard_data(records, source_label):
     return {
         "source": source_label,
         "hospitals": hospitals,
-        "date_range": [stays["admission_date"].min().strftime("%b %Y"), stays["admission_date"].max().strftime("%b %Y")],
-        "records": int(len(records)),
+        "date_range": [stays["admission_date"].min().strftime("%b %Y"),
+                       stays["admission_date"].max().strftime("%b %Y")],
+        "records": len(records),
         "views": views,
     }

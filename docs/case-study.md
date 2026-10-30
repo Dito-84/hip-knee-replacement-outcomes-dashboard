@@ -106,4 +106,3 @@ Some patterns are chance. With this seed, the 2019 and 2021 complication rates b
 
 - A **funnel plot** for hospitals: rate against volume, with control limits that narrow as volume grows. It's the standard way to compare providers in healthcare quality work.
 - A **simulation test** that generates many seeds and checks each 95% interval contains the true value about 95% of the time.
-- **Pinned dependencies**, linting and a coverage report in CI.

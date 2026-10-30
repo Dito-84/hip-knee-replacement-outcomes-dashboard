@@ -12,7 +12,7 @@ An interactive dashboard of complications, complication readmissions and length 
 
 - **What it is:** a rebuild, in Python, of a hospital quality dashboard I built during an internship. It covers complications, readmissions and length of stay after hip and knee replacement, measured against the CMS complication measure.
 - **What the rebuild found:** six issues in the original measures, including counting records instead of surgeries, which overstated the complication rate. Each now has a test. The **[case study](docs/case-study.md)** tells the story, including how much data a hospital comparison actually needs to detect a difference.
-- **How it's built:** every measure is computed ahead of time by a tested Python package (46 tests, 96% coverage). The page is one self-contained HTML file, deployed to GitHub Pages and to AWS (S3 + CloudFront, defined in CDK, deployed through OIDC, security-checked by cdk-nag).
+- **How it's built:** every measure is computed ahead of time by a tested Python package (48 tests, 96% coverage enforced in CI, pinned dependencies, linted with ruff). The page is one HTML file with a Content-Security-Policy and an integrity-checked chart library, deployed to GitHub Pages and to AWS (S3 + CloudFront, defined in CDK, deployed through OIDC, security-checked by cdk-nag).
 - **How it treats data:** synthetic data only in public. Real builds can only be written to a git-ignored folder, every build stops on data errors, and small counts can be hidden to meet the CMS rule.
 
 ```mermaid
@@ -76,16 +76,18 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `outcomes/schema.py` | Column definitions; matches the original export's headers even with line breaks |
 | `outcomes/load.py` | Reads CSV or Excel, finds the header row, cleans dates and Yes/No fields |
 | `outcomes/metrics.py` | Collapses records to stays and computes every measure for each filter combination |
+| `outcomes/stats.py` | Statistical helpers: Wilson and Poisson intervals, odds ratios, Mantel-Haenszel |
 | `outcomes/synthetic.py` | Generates the synthetic dataset (seeded, reproducible) |
 | `dashboard/template.html` | The dashboard page (Plotly.js), filled with precomputed data at build time |
 | `build.py` | Builds a single self-contained `index.html` |
-| `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, original-formula errors, O/E, odds ratios, synthetic data |
+| `tests/` | pytest suite, one file per area: loading, measures, original-formula errors, comparisons, statistics, suppression, build, synthetic data, quality checks |
 | `docs/measure-crosswalk.md` | Each measure against its CMS definition and Python implementation |
 | `docs/case-study.md` | The analytical story: what the rebuild found, how the methods were checked, and how much data a comparison needs |
 | `docs/glossary.md` | Plain-language definitions of every term on the dashboard |
 | `outcomes/suppression.py` | Optional small-cell suppression (counts of 1 to 10) for builds that will be shared |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
 | `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed |
+| `scripts/check_cdn_integrity.py` | CI check that the chart library on the CDN still matches the integrity hash in the page |
 | `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda ([details](infra/README.md)) |
 
 ## Run it locally
@@ -96,7 +98,9 @@ python build.py            # builds _site/index.html from the synthetic data
 open _site/index.html
 ```
 
-Run the tests with `pip install pytest && pytest`. Regenerate the synthetic data with `python -m outcomes.synthetic`.
+For development, `pip install -r requirements-dev.txt`, then `ruff check .` and `pytest --cov` (CI fails below 90% coverage). Regenerate the synthetic data with `python -m outcomes.synthetic`.
+
+Dependencies are pinned in `requirements.txt` and `requirements-dev.txt`, generated from `pyproject.toml` with `uv pip compile` (the command is at the top of each file). Dependabot proposes updates monthly, and CI tests them before anything is merged.
 
 ## Using your own data
 
@@ -147,7 +151,7 @@ It includes least-privilege IAM, automated cdk-nag security checks in CI, and a 
 
 ## Built with
 
-Python (pandas, NumPy), Plotly.js, pytest, GitHub Actions and GitHub Pages; on AWS, CDK, S3, CloudFront, Lambda, SNS and IAM (OIDC).
+Python (pandas, NumPy), Plotly.js, pytest, ruff, uv, GitHub Actions and GitHub Pages; on AWS, CDK, S3, CloudFront, Lambda, SNS and IAM (OIDC).
 
 ## License
 

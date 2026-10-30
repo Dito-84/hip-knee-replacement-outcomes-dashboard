@@ -19,7 +19,10 @@ stops if one finds an error that would make the measures wrong. Use
 """
 
 import argparse
+import base64
+import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -32,6 +35,31 @@ ROOT = Path(__file__).resolve().parent
 SYNTHETIC = ROOT / "data" / "synthetic_discharges.csv"
 TEMPLATE = ROOT / "dashboard" / "template.html"
 PLACEHOLDER = "/*__DATA__*/null"
+CSP_PLACEHOLDER = "<!--__CSP__-->"
+
+
+def content_security_policy(html):
+    """A Content-Security-Policy <meta> tag that allows only what the page needs.
+
+    The page's own script embeds the data, so it changes with every build: its
+    SHA-256 hash is computed here and is the only inline script allowed. Plotly
+    comes from jsDelivr, pinned by a subresource-integrity hash in the template;
+    fonts come from Google Fonts. Styles stay inline because Plotly injects them.
+    """
+    inline = re.findall(r"<script>(.*?)</script>", html, flags=re.S)
+    hashes = " ".join(
+        "'sha256-" + base64.b64encode(hashlib.sha256(code.encode("utf-8")).digest()).decode() + "'" for code in inline
+    )
+    policy = "; ".join([
+        "default-src 'none'",
+        f"script-src {hashes} https://cdn.jsdelivr.net",
+        "style-src 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src https://fonts.gstatic.com",
+        "img-src data:",
+        "base-uri 'none'",
+        "form-action 'none'",
+    ])
+    return f'<meta http-equiv="Content-Security-Policy" content="{policy}">'
 
 
 def _is_safe_output(out_dir):
@@ -81,6 +109,7 @@ def main(argv=None):
         sys.exit("Template is missing the data placeholder")
     payload = json.dumps(data, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
     html = html.replace(PLACEHOLDER, payload)
+    html = html.replace(CSP_PLACEHOLDER, content_security_policy(html))
 
     args.out.mkdir(parents=True, exist_ok=True)
     out_file = args.out / "index.html"

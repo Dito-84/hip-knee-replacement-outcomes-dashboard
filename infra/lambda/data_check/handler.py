@@ -15,7 +15,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote_plus
 
@@ -34,7 +34,7 @@ sns = boto3.client("sns")
 
 def check_file(path: Path) -> dict:
     """Check one local file and return the report (no AWS calls, so it's easy to test)."""
-    report: dict = {"file": path.name, "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    report: dict = {"file": path.name, "checked_at": datetime.now(UTC).isoformat(timespec="seconds")}
     if path.suffix.lower() not in SUPPORTED:
         return {**report, "status": "skipped", "reason": f"unsupported file type {path.suffix or '(none)'}"}
     try:

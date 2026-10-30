@@ -4,7 +4,6 @@ S3 and SNS are replaced with in-memory fakes, so no AWS account is needed.
 """
 
 import importlib
-import io
 import json
 import shutil
 import subprocess

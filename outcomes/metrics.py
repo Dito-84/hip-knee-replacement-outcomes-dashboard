@@ -3,10 +3,11 @@
 Two corrections compared with the original Qlik version:
 
 1. **Rates are per surgery, not per row.** A patient with two complications
-   appears on two rows (the second flagged as an additional record). The
-   Qlik measures counted rows, so those patients inflated the denominator
-   and every rate came out slightly low. Here rows are first collapsed to one
-   row per index stay.
+   appears on two rows (the second flagged as an additional record), and the
+   Qlik measures counted rows. For complication and readmission rates the
+   extra rows add to both numerator and denominator, which overstates the
+   rate; for rates like mortality they add only to the denominator, which
+   understates it. Here rows are first collapsed to one row per index stay.
 2. **"Readmissions" are complication readmissions.** The only readmission
    date in the file is the admit date for a complication, so the measure is
    labelled "30-day complication readmission", not all-cause readmission.

@@ -8,6 +8,25 @@ An interactive dashboard of complications, complication readmissions and length 
 
 > **All data in this repository is synthetic.** The original dashboard was built in Qlik Sense on de-identified hospital discharge data, which is not included here and never leaves the analyst's computer. This version is rebuilt in Python and runs on a randomly generated dataset with the same structure, so it can be shared publicly. Hospital names, counts and rates on the live page are fictional.
 
+## At a glance
+
+- **What it is:** a rebuild, in Python, of a hospital quality dashboard I built during an internship. It covers complications, readmissions and length of stay after hip and knee replacement, measured against the CMS complication measure.
+- **What the rebuild found:** six issues in the original measures, including counting records instead of surgeries, which overstated the complication rate. Each now has a test. The **[case study](docs/case-study.md)** tells the story, including how much data a hospital comparison actually needs to detect a difference.
+- **How it's built:** every measure is computed ahead of time by a tested Python package (46 tests, 96% coverage). The page is one self-contained HTML file, deployed to GitHub Pages and to AWS (S3 + CloudFront, defined in CDK, deployed through OIDC, security-checked by cdk-nag).
+- **How it treats data:** synthetic data only in public. Real builds can only be written to a git-ignored folder, every build stops on data errors, and small counts can be hidden to meet the CMS rule.
+
+```mermaid
+flowchart LR
+    data[(Discharge file)] --> load[Load and clean]
+    load --> checks{Data-quality<br/>checks}
+    checks -- error --> stop([Build stops])
+    checks -- pass --> stays[One row<br/>per surgery]
+    stays --> measures[Every measure,<br/>every filter]
+    measures --> page[Self-contained<br/>HTML page]
+    page --> pages[GitHub Pages]
+    page --> aws[S3 + CloudFront]
+```
+
 ![Dashboard screenshot](docs/dashboard.png)
 
 ## Background
@@ -43,7 +62,7 @@ Filter by hospital, by procedure (hip or knee), and by population: all surgeries
 
 Rebuilding the dashboard surfaced two issues in the original Qlik measures, both fixed here:
 
-1. **Rates are per surgery, not per row.** A patient with two complications appears on two records. The original measures counted records, which inflated the denominator and understated every rate. Records are now collapsed to one row per index stay first ([`outcomes/metrics.py`](outcomes/metrics.py)).
+1. **Rates are per surgery, not per row.** A patient with two complications appears on two records, and the original measures counted records. For the complication and readmission rates the extra records add to both the top and the bottom of the fraction, which overstates the rate (on the synthetic data, a 3.41% complication rate instead of 3.08%). For rates like mortality they only add to the bottom, which understates it slightly. Records are now collapsed to one row per index stay first ([`outcomes/metrics.py`](outcomes/metrics.py)).
 2. **Readmissions are labelled correctly.** The data only records readmissions *for a complication*, so the measure is "30-day complication readmission", not the CMS all-cause readmission rate.
 
 A later review of the original formulas found four more errors in individual Qlik measures: knee rates with a hip denominator, an exclusion-adjusted mortality rate that applied exclusions to the denominator only, age calculated at discharge instead of admission, and age bands with gaps. None carried over, because the rebuild computes every rate from one filtered set of stays. Each has a test with a small made-up case.
@@ -62,6 +81,7 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `build.py` | Builds a single self-contained `index.html` |
 | `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, original-formula errors, O/E, odds ratios, synthetic data |
 | `docs/measure-crosswalk.md` | Each measure against its CMS definition and Python implementation |
+| `docs/case-study.md` | The analytical story: what the rebuild found, how the methods were checked, and how much data a comparison needs |
 | `docs/glossary.md` | Plain-language definitions of every term on the dashboard |
 | `outcomes/suppression.py` | Optional small-cell suppression (counts of 1 to 10) for builds that will be shared |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |

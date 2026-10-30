@@ -13,6 +13,9 @@ Two corrections compared with the original Qlik version:
 
 Exclusion-adjusted views drop stays excluded from the CMS measure, and
 complications flagged as excluded due to COVID-19.
+
+Rates are observed, not the CMS risk-standardized rate. The hospital table
+adds an observed/expected ratio adjusted only for age group and procedure.
 """
 
 import numpy as np
@@ -173,14 +176,56 @@ def summarize(stays, comps, hospital="All", procedure="All", population="all"):
     }
 
 
+def _procedure_group(stays):
+    return np.select([stays["has_tha"] & stays["has_tka"], stays["has_tha"]], ["Both", "THA"], "TKA")
+
+
+def expected_complications(reference, target, population):
+    """Indirect standardization by age group and procedure.
+
+    Each stratum's complication rate in `reference` is applied to the stays in
+    `target`; the sum is the number of complications `target` would have had
+    at the reference rates, given its own patient mix.
+    """
+    flag = f"complication_{population}"
+
+    def strata(s):
+        return s["age_group"].astype(str) + "|" + pd.Series(_procedure_group(s), index=s.index)
+
+    rates = reference.groupby(strata(reference))[flag].mean()
+    return float(strata(target).map(rates).fillna(reference[flag].mean()).sum())
+
+
+def poisson_ratio_interval(observed, expected, z=1.96):
+    """95% interval for observed/expected, treating observed as Poisson (Byar's approximation)."""
+    if expected == 0:
+        return None, None
+    o = observed
+    low = 0.0 if o == 0 else o * (1 - 1 / (9 * o) - z / (3 * np.sqrt(o))) ** 3
+    high = (o + 1) * (1 - 1 / (9 * (o + 1)) + z / (3 * np.sqrt(o + 1))) ** 3
+    return float(low / expected), float(high / expected)
+
+
 def hospital_table(stays, procedure="All", population="all"):
-    """Side-by-side comparison of hospitals (ignores the hospital filter)."""
+    """Side-by-side comparison of hospitals (ignores the hospital filter).
+
+    Besides observed rates, each hospital gets an observed/expected (O/E) ratio
+    adjusted for age group and procedure, against all hospitals combined.
+    This is not the CMS risk-standardized rate (see docs/measure-crosswalk.md).
+    """
+    reference = filter_stays(stays, "All", procedure, population)
+    ref_rate = _rate(reference[f"complication_{population}"].sum(), len(reference))
     rows = []
     for hospital in sorted(stays["hospital"].dropna().unique()):
         s = filter_stays(stays, hospital, procedure, population)
         k = kpis(s, population)
         low, high = wilson_interval(k["complications"], k["stays"])
-        rows.append({"hospital": hospital, **k, "complication_ci": [low, high]})
+        expected = expected_complications(reference, s, population) if len(s) else 0.0
+        oe = _rate(k["complications"], expected)
+        oe_low, oe_high = poisson_ratio_interval(k["complications"], expected)
+        rows.append({"hospital": hospital, **k, "complication_ci": [low, high],
+                     "expected": expected, "oe_ratio": oe, "oe_ci": [oe_low, oe_high],
+                     "adjusted_rate": None if oe is None or ref_rate is None else oe * ref_rate})
     return rows
 
 

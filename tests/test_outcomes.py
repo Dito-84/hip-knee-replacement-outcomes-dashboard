@@ -5,7 +5,8 @@ import pytest
 
 from outcomes import synthetic
 from outcomes.load import DataFormatError, load
-from outcomes.metrics import build_dashboard_data, build_stays, summarize, wilson_interval
+from outcomes.metrics import (build_dashboard_data, build_stays, hospital_table, poisson_ratio_interval,
+                              summarize, wilson_interval)
 from outcomes.schema import COLUMNS, match_headers
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -242,3 +243,49 @@ def test_age_groups_cover_boundary_ages(tmp_path):
     assert by_age["65–69"] == 1
     assert by_age["85+"] == 2
     assert sum(by_age.values()) == 3
+
+
+# ---------- observed / expected (age group and procedure) ----------
+
+def _comp(**kw):
+    return stay(had_complication="Yes", complication="Infection", during_index_stay="Yes", **kw)
+
+
+def test_oe_ratio_removes_a_difference_that_is_only_patient_mix(tmp_path):
+    # Same within-group rates, different age mix. Reference: age 80-84 knee 2/4 = 50%, age 65-69 knee 0/2.
+    # A: two 80-year-olds, one complication -> observed 50%, expected 1.0, O/E 1.0
+    # B: two 80-year-olds (one complication) and two 66-year-olds -> observed 25%, expected 1.0, O/E 1.0
+    stays, _ = _load_rows(tmp_path, [
+        _comp(hospital="A", dob="01/01/1940"), stay(hospital="A", dob="01/02/1940"),
+        _comp(hospital="B", dob="01/01/1940"), stay(hospital="B", dob="01/02/1940"),
+        stay(hospital="B", dob="01/01/1954"), stay(hospital="B", dob="01/02/1954"),
+    ])
+    rows = {r["hospital"]: r for r in hospital_table(stays)}
+    assert rows["A"]["complication_rate"] == pytest.approx(0.5)
+    assert rows["B"]["complication_rate"] == pytest.approx(0.25)
+    for h in ("A", "B"):
+        assert rows[h]["expected"] == pytest.approx(1.0)
+        assert rows[h]["oe_ratio"] == pytest.approx(1.0)
+        assert rows[h]["adjusted_rate"] == pytest.approx(2 / 6)
+
+
+def test_oe_ratio_shows_a_difference_within_the_same_patient_mix(tmp_path):
+    # Four 66-year-old knee patients; A has two complications, B none. Reference rate 50%.
+    stays, _ = _load_rows(tmp_path, [
+        _comp(hospital="A", dob="01/01/1954"), _comp(hospital="A", dob="01/02/1954"),
+        stay(hospital="B", dob="01/01/1954"), stay(hospital="B", dob="01/02/1954"),
+    ])
+    rows = {r["hospital"]: r for r in hospital_table(stays)}
+    assert rows["A"]["oe_ratio"] == pytest.approx(2.0)
+    assert rows["B"]["oe_ratio"] == pytest.approx(0.0)
+    assert rows["B"]["oe_ci"][0] == 0.0
+
+
+def test_oe_interval_matches_exact_poisson_limits():
+    # Exact Poisson 95% limits: 0 events -> (0, 3.689); 10 events -> (4.795, 18.39)
+    low, high = poisson_ratio_interval(0, 1)
+    assert low == 0.0 and high == pytest.approx(3.689, rel=0.01)
+    low, high = poisson_ratio_interval(10, 10)
+    assert low == pytest.approx(0.4795, rel=0.01)
+    assert high == pytest.approx(1.839, rel=0.01)
+    assert poisson_ratio_interval(3, 0) == (None, None)

@@ -4,7 +4,7 @@ How each measure on the dashboard relates to the public CMS definition, and wher
 
 **Source definitions:** CMS, *Hospital-Level Risk-Standardized Complication Rate (RSCR) Following Elective Primary Total Hip Arthroplasty (THA) and/or Total Knee Arthroplasty (TKA)*. See the [measure methodology page](https://www.cms.gov/Medicare/Quality-Initiatives-Patient-Assessment-Instruments/HospitalQualityInits/Measure-Methodology.html) and [QualityNet](https://qualitynet.cms.gov/) (Hospitals – Inpatient > Measures > Complications).
 
-> **Observed rates, not risk-standardized.** The CMS RSCR runs each hospital through a hierarchical risk model: predicted complications ÷ expected complications × the national rate. This dashboard shows **observed** rates: complications ÷ surgeries. They show where complications happen, but they aren't the published RSCR, and they don't adjust for differences in patient mix between hospitals.
+> **Observed rates, not risk-standardized.** The CMS RSCR runs each hospital through a hierarchical risk model: predicted complications ÷ expected complications × the national rate. This dashboard shows **observed** rates: complications ÷ surgeries. They show where complications happen, but they aren't the published RSCR. The data has none of the claims-based risk factors CMS uses, so the RSCR can't be calculated from it. For hospital comparisons, the dashboard adds an observed-vs-expected ratio adjusted for the two risk factors the data does have, age group and procedure, labeled as not the CMS rate.
 
 ## Measures
 
@@ -21,6 +21,7 @@ How each measure on the dashboard relates to the public CMS definition, and wher
 | **Average length of stay** | — (descriptive) | Discharge date − admission date, in days, averaged over stays | Same as the original, but averaged per stay rather than per record. |
 | **Age and age groups** | Cohort: Medicare fee-for-service beneficiaries 65 or older at admission | Age at the admission date, accounting for birthdays; groups Under 65, 65–69, 70–74, 75–79, 80–84, 85+ | The original calculated age at discharge. Its age bands left out exactly 65 and anyone 100 or older, and mislabeled the 90–94 band. Under 65 is kept as a group so data-quality problems stay visible. |
 | **Hospital comparison** | — | Observed complication rate per hospital with a 95% Wilson confidence interval | The interval keeps small hospitals from being over-read. It isn't the CMS interval estimate, which comes from the risk model. |
+| **Observed vs expected (O/E) by hospital** | CMS compares predicted with expected complications, using a hierarchical model with patient risk factors from earlier claims. This is a simpler cousin of that idea | `hospital_table`: indirect standardization. Each age group × procedure (hip, knee, both) group's complication rate across all hospitals is applied to each hospital's own patients to get expected complications. O/E = observed ÷ expected; adjusted rate = O/E × overall rate. 95% interval by Byar's approximation to the Poisson | Adjusts for age and procedure only, the risk factors this data has. The reference is all hospitals in the file, not the national rate, and it isn't the CMS rate. Above 1.0 means more complications than that hospital's patient mix predicts. |
 
 ## Issues found in the original Qlik measures
 

@@ -32,7 +32,7 @@ The original application and its patient-level data stay private. This repositor
 - **Headline measures:** surgeries, complication rate, 30-day complication readmission rate, mortality and average length of stay
 - **Trends by year,** including the spring 2020 drop in elective surgery
 - **Complications by type:** the eight complications in the CMS measure (mechanical complications, infection, pulmonary embolism, pneumonia, sepsis, AMI, surgical site bleeding, death)
-- **Hospital comparison** with 95% confidence intervals, so small hospitals aren't over-read
+- **Hospital comparison** with 95% confidence intervals, so small hospitals aren't over-read, plus an observed-vs-expected ratio adjusted for age group and procedure
 - **Complication rate by age group,** length of stay and time from discharge to readmission
 
 Filter by hospital, by procedure (hip or knee), and by population: all surgeries, or exclusion-adjusted (removing stays excluded from the CMS measure and complications flagged as COVID-19 related).
@@ -46,7 +46,7 @@ Rebuilding the dashboard surfaced two issues in the original Qlik measures, both
 
 A later review of the original formulas found four more errors in individual Qlik measures: knee rates with a hip denominator, an exclusion-adjusted mortality rate that applied exclusions to the denominator only, age calculated at discharge instead of admission, and age bands with gaps. None carried over, because the rebuild computes every rate from one filtered set of stays. Each has a test with a small made-up case.
 
-The rates are observed, not risk-standardized like the published CMS RSCR. The **[measure crosswalk](docs/measure-crosswalk.md)** maps each measure to its CMS definition and its Python implementation.
+The rates are observed, not risk-standardized like the published CMS RSCR, which needs patient risk factors from Medicare claims that this data doesn't have. For hospital comparisons, an **observed-vs-expected ratio** adjusts for age group and procedure, the two risk factors the data does have. The **[measure crosswalk](docs/measure-crosswalk.md)** maps each measure to its CMS definition and its Python implementation.
 
 ## Project structure
 

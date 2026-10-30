@@ -26,6 +26,10 @@ updates:
       # stay on 2.x until the stack is migrated
       - dependency-name: "cdk-nag"
         versions: [">=3"]
+      # botocore (boto3, in the Lambda runtime and the infra tests) requires python-dateutil < 3;
+      # the Lambda bundles its own copy ahead of the runtime's, so 3.x would break boto3 there
+      - dependency-name: "python-dateutil"
+        versions: [">=3"]
     # Ranges like "pandas>=2.0" only change when a new release falls outside them;
     # exact pins (the Lambda's ==) are still updated
     versioning-strategy: increase-if-necessary

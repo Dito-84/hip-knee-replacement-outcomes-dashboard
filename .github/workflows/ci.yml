@@ -22,15 +22,22 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements-dev.txt
 
-      - name: Install
-        run: pip install -r requirements.txt pytest
+      - name: Install (pinned versions)
+        run: pip install -r requirements-dev.txt
 
-      - name: Run tests
-        run: pytest -v
+      - name: Lint
+        run: ruff check .
+
+      - name: Run tests with coverage (fails under 90%)
+        run: pytest -v --cov
 
       - name: Build the dashboard from synthetic data
         run: python build.py
+
+      - name: Check the CDN script matches its integrity hash
+        run: python scripts/check_cdn_integrity.py
 
   infra:
     # AWS hosting (infra/): template security checks, data-check Lambda tests, and a full CDK synth.

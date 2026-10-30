@@ -215,7 +215,9 @@ def test_budget_alert_comes_with_an_email():
         "Budget": {"BudgetType": "COST", "TimeUnit": "MONTHLY", "BudgetLimit": {"Amount": 10, "Unit": "USD"}},
         "NotificationsWithSubscribers": [
             Match.object_like({"Notification": Match.object_like({"NotificationType": "ACTUAL", "Threshold": 80})}),
-            Match.object_like({"Notification": Match.object_like({"NotificationType": "FORECASTED", "Threshold": 100})}),
+            Match.object_like(
+                {"Notification": Match.object_like({"NotificationType": "FORECASTED", "Threshold": 100})}
+            ),
         ],
     })
 

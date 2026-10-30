@@ -1,3 +1,57 @@
+[project]
+name = "hip-knee-outcomes"
+version = "1.0.0"
+description = "Outcomes dashboard for hip and knee replacement (THA/TKA), rebuilt in Python on synthetic data"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "Rolando Rodriguez" }]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "openpyxl>=3.1",
+    # boto3 (in the AWS Lambda runtime and the infra tests) needs python-dateutil < 3
+    "python-dateutil>=2.8.2,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff"]
+
+[project.urls]
+Dashboard = "https://dito-84.github.io/hip-knee-replacement-outcomes-dashboard/"
+Repository = "https://github.com/Dito-84/hip-knee-replacement-outcomes-dashboard"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["outcomes"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "--strict-markers"
+markers = ["slow: long-running statistical checks (run with -m slow)"]
+
+[tool.coverage.run]
+source = ["outcomes", "build"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["infra/cdk.out"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, import order, likely bugs, modern syntax, comprehensions
+select = ["E", "F", "W", "I", "B", "UP", "C4"]
+# zip(strict=) would only add noise: every zip here pairs columns of the same frame
+ignore = ["B905"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["outcomes", "dashboard_infra", "handler", "helpers", "build", "check_data", "check_cdn_integrity"]

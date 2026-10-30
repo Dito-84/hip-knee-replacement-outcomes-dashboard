@@ -13,9 +13,9 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # Python packages for the AWS infrastructure and the data-check Lambda
+  # Python packages: the dashboard's pinned requirements, the AWS infrastructure and the data-check Lambda
   - package-ecosystem: "pip"
-    directories: ["/infra", "/infra/lambda/data_check"]
+    directories: ["/", "/infra", "/infra/lambda/data_check"]
     schedule:
       interval: "monthly"
     groups:

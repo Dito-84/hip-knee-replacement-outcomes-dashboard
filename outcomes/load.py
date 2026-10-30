@@ -30,7 +30,8 @@ def _read_raw(path, sheet=None):
     if path.suffix.lower() == ".csv":
         return {"csv": pd.read_csv(path, header=None, dtype=object, keep_default_na=False)}
     if path.suffix.lower() in (".xlsx", ".xlsm", ".xls"):
-        return pd.read_excel(path, sheet_name=sheet if sheet is not None else None, header=None, dtype=object)
+        return pd.read_excel(path, sheet_name=sheet if sheet is not None else None, header=None, dtype=object,
+                             engine="openpyxl")
     raise DataFormatError(f"Unsupported file type: {path.suffix} (use .csv or .xlsx)")
 
 
@@ -45,7 +46,7 @@ def load(path, sheet=None):
     if isinstance(sheets, pd.DataFrame):
         sheets = {sheet: sheets}
 
-    for name, raw in sheets.items():
+    for raw in sheets.values():
         header_row = _find_header_row(raw)
         if header_row is None:
             continue

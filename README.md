@@ -44,6 +44,10 @@ Rebuilding the dashboard surfaced two issues in the original Qlik measures, both
 1. **Rates are per surgery, not per row.** A patient with two complications appears on two records. The original measures counted records, which inflated the denominator and understated every rate. Records are now collapsed to one row per index stay first ([`outcomes/metrics.py`](outcomes/metrics.py)).
 2. **Readmissions are labelled correctly.** The data only records readmissions *for a complication*, so the measure is "30-day complication readmission", not the CMS all-cause readmission rate.
 
+A later review of the original formulas found four more errors in individual Qlik measures: knee rates with a hip denominator, an exclusion-adjusted mortality rate that applied exclusions to the denominator only, age calculated at discharge instead of admission, and age bands with gaps. None carried over, because the rebuild computes every rate from one filtered set of stays. Each has a test with a small made-up case.
+
+The rates are observed, not risk-standardized like the published CMS RSCR. The **[measure crosswalk](docs/measure-crosswalk.md)** maps each measure to its CMS definition and its Python implementation.
+
 ## Project structure
 
 | Path | Purpose |
@@ -54,7 +58,8 @@ Rebuilding the dashboard surfaced two issues in the original Qlik measures, both
 | `outcomes/synthetic.py` | Generates the synthetic dataset (seeded, reproducible) |
 | `dashboard/template.html` | The dashboard page (Plotly.js), filled with precomputed data at build time |
 | `build.py` | Builds a single self-contained `index.html` |
-| `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, synthetic data |
+| `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, original-formula errors, synthetic data |
+| `docs/measure-crosswalk.md` | Each measure against its CMS definition and Python implementation |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
 | `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed |
 | `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda ([details](infra/README.md)) |

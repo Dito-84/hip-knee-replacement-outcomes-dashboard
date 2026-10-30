@@ -33,6 +33,9 @@ jobs:
       - name: Run tests with coverage (fails under 90%)
         run: pytest -v --cov
 
+      - name: Slow statistical checks (interval coverage across 30 synthetic datasets)
+        run: pytest -v -m slow --no-cov
+
       - name: Build the dashboard from synthetic data
         run: python build.py
 

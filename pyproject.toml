@@ -31,8 +31,8 @@ packages = ["outcomes"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--strict-markers"
-markers = ["slow: long-running statistical checks (run with -m slow)"]
+addopts = "--strict-markers -m 'not slow'"
+markers = ["slow: long-running statistical checks (run with: pytest -m slow --no-cov)"]
 
 [tool.coverage.run]
 source = ["outcomes", "build"]

@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .schema import COMPLICATION_TYPES
-from .stats import mantel_haenszel, odds_ratio, poisson_ratio_interval, wilson_interval
+from .stats import binomial_quantile, mantel_haenszel, odds_ratio, poisson_ratio_interval, wilson_interval
 
 AGE_BINS = [0, 65, 70, 75, 80, 85, 200]
 AGE_LABELS = ["Under 65", "65–69", "70–74", "75–79", "80–84", "85+"]
@@ -306,6 +306,38 @@ def hospital_table(stays, procedure="All", population="all"):
     return rows
 
 
+FUNNEL_LIMITS = {"95": (0.025, 0.975), "99.8": (0.001, 0.999)}
+
+
+def funnel(stays, procedure="All", population="all", points=80):
+    """Funnel plot of complication rate against number of surgeries.
+
+    The centre line is the rate across all hospitals. The control limits show
+    where a hospital's observed rate would fall 95% and 99.8% of the time if
+    its true rate were the centre rate, given its number of surgeries. They're
+    exact binomial limits, so they narrow as volume grows. A hospital outside
+    the 99.8% limits is unlikely to differ by chance alone.
+    """
+    s = filter_stays(stays, "All", procedure, population)
+    n_total = len(s)
+    complications = int(s[f"complication_{population}"].sum())
+    p0 = _rate(complications, n_total)
+    sizes = s.groupby("hospital").size()
+    smallest, largest = (int(sizes.min()), int(sizes.max())) if n_total else (0, 0)
+    # From a fifth of the smallest hospital to a quarter beyond the largest, so the hospitals fill the plot
+    bottom = max(10, smallest // 5)
+    top = max(bottom * 5, int(largest * 1.25))
+    grid = sorted({round(x) for x in np.geomspace(bottom, top, points)})
+    out = {"stays": n_total, "complications": complications, "rate": p0, "n": grid}
+    for name, (low_q, high_q) in FUNNEL_LIMITS.items():
+        if p0 is None:
+            out[f"low_{name}"] = out[f"high_{name}"] = [None] * len(grid)
+            continue
+        out[f"low_{name}"] = [binomial_quantile(n, p0, low_q) / n for n in grid]
+        out[f"high_{name}"] = [binomial_quantile(n, p0, high_q) / n for n in grid]
+    return out
+
+
 def build_dashboard_data(records, source_label):
     stays, comps = build_stays(records)
     hospitals = ["All"] + sorted(stays["hospital"].dropna().unique().tolist())
@@ -315,6 +347,7 @@ def build_dashboard_data(records, source_label):
             for hospital in hospitals:
                 views[f"{hospital}|{procedure}|{population}"] = summarize(stays, comps, hospital, procedure, population)
             views[f"__hospitals__|{procedure}|{population}"] = hospital_table(stays, procedure, population)
+            views[f"__funnel__|{procedure}|{population}"] = funnel(stays, procedure, population)
     return {
         "source": source_label,
         "hospitals": hospitals,

@@ -12,7 +12,7 @@ An interactive dashboard of complications, complication readmissions and length 
 
 - **What it is:** a rebuild, in Python, of a hospital quality dashboard I built during an internship. It covers complications, readmissions and length of stay after hip and knee replacement, measured against the CMS complication measure.
 - **What the rebuild found:** six issues in the original measures, including counting records instead of surgeries, which overstated the complication rate. Each now has a test. The **[case study](docs/case-study.md)** tells the story, including how much data a hospital comparison actually needs to detect a difference.
-- **How it's built:** every measure is computed ahead of time by a tested Python package (48 tests, 96% coverage enforced in CI, pinned dependencies, linted with ruff). The page is one HTML file with a Content-Security-Policy and an integrity-checked chart library, deployed to GitHub Pages and to AWS (S3 + CloudFront, defined in CDK, deployed through OIDC, security-checked by cdk-nag).
+- **How it's built:** every measure is computed ahead of time by a tested Python package (53 tests plus a slow simulation check, 96% coverage enforced in CI, pinned dependencies, linted with ruff). The page is one HTML file with a Content-Security-Policy and an integrity-checked chart library, deployed to GitHub Pages and to AWS (S3 + CloudFront, defined in CDK, deployed through OIDC, security-checked by cdk-nag).
 - **How it treats data:** synthetic data only in public. Real builds can only be written to a git-ignored folder, every build stops on data errors, and small counts can be hidden to meet the CMS rule.
 
 ```mermaid
@@ -53,7 +53,7 @@ The original application and its patient-level data stay private. This repositor
 - **Complications by type:** the eight complications in the CMS measure (mechanical complications, infection, pulmonary embolism, pneumonia, sepsis, AMI, surgical site bleeding, death), split into during the stay and after discharge, with the rate of each per surgery
 - **Length of stay** overall and by complication status
 - **Hip vs knee odds ratios** for each complication, unadjusted and adjusted for age group (Mantel-Haenszel), with 95% confidence intervals
-- **Hospital comparison** with 95% confidence intervals, so small hospitals aren't over-read, plus an observed-vs-expected ratio adjusted for age group and procedure
+- **Hospital comparison** as a funnel plot (rate against volume, with exact 95% and 99.8% control limits), plus an observed-vs-expected ratio adjusted for age group and procedure, and a table with 95% confidence intervals
 - **Complication rate by age group,** length of stay and time from discharge to readmission
 
 Filter by hospital, by procedure (hip or knee), and by population: all surgeries, or exclusion-adjusted (removing stays excluded from the CMS measure and complications flagged as COVID-19 related).
@@ -80,7 +80,7 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `outcomes/synthetic.py` | Generates the synthetic dataset (seeded, reproducible) |
 | `dashboard/template.html` | The dashboard page (Plotly.js), filled with precomputed data at build time |
 | `build.py` | Builds a single self-contained `index.html` |
-| `tests/` | pytest suite, one file per area: loading, measures, original-formula errors, comparisons, statistics, suppression, build, synthetic data, quality checks |
+| `tests/` | pytest suite, one file per area: loading, measures, original-formula errors, comparisons, statistics (including simulated interval coverage), suppression, build, synthetic data, quality checks |
 | `docs/measure-crosswalk.md` | Each measure against its CMS definition and Python implementation |
 | `docs/case-study.md` | The analytical story: what the rebuild found, how the methods were checked, and how much data a comparison needs |
 | `docs/glossary.md` | Plain-language definitions of every term on the dashboard |
@@ -98,7 +98,7 @@ python build.py            # builds _site/index.html from the synthetic data
 open _site/index.html
 ```
 
-For development, `pip install -r requirements-dev.txt`, then `ruff check .` and `pytest --cov` (CI fails below 90% coverage). Regenerate the synthetic data with `python -m outcomes.synthetic`.
+For development, `pip install -r requirements-dev.txt`, then `ruff check .` and `pytest --cov` (CI fails below 90% coverage). `pytest -m slow --no-cov` runs the slower end-to-end check of interval coverage across 30 generated datasets (about 20 seconds); CI runs it too. Regenerate the synthetic data with `python -m outcomes.synthetic`.
 
 Dependencies are pinned in `requirements.txt` and `requirements-dev.txt`, generated from `pyproject.toml` with `uv pip compile` (the command is at the top of each file). Dependabot proposes updates monthly, and CI tests them before anything is merged.
 

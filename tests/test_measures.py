@@ -128,5 +128,6 @@ def test_dashboard_data_has_every_view():
     data = build_dashboard_data(load(ROOT / "data" / "synthetic_discharges.csv"), "synthetic")
     hospitals = data["hospitals"]
     assert hospitals[0] == "All"
-    expected = len(hospitals) * 3 * 2 + 3 * 2
+    # every filter combination, plus a hospital table and a funnel for each procedure × population
+    expected = len(hospitals) * 3 * 2 + 3 * 2 * 2
     assert len(data["views"]) == expected

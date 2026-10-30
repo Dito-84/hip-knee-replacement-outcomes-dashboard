@@ -1,8 +1,10 @@
-"""Statistical helpers, each checked against a textbook value or a hand calculation."""
+"""Statistical helpers, each checked against a textbook value or a hand calculation,
+and each 95% interval checked by simulation to contain the truth about 95% of the time."""
 
+import numpy as np
 import pytest
 
-from outcomes.stats import mantel_haenszel, odds_ratio, poisson_ratio_interval, wilson_interval
+from outcomes.stats import binomial_quantile, mantel_haenszel, odds_ratio, poisson_ratio_interval, wilson_interval
 
 
 def test_wilson_interval_contains_rate():
@@ -45,3 +47,43 @@ def test_mantel_haenszel_removes_confounding_by_age():
 def test_mantel_haenszel_with_one_stratum_matches_woolf():
     assert mantel_haenszel([(10, 90, 5, 95)]) == pytest.approx(odds_ratio(10, 90, 5, 95))
     assert mantel_haenszel([(0, 10, 0, 10)]) == (None, None, None)
+
+
+def test_binomial_quantile_exact_values():
+    # Binomial(100, 0.03): P(X <= 0) = 0.048, P(X <= 6) = 0.969, P(X <= 7) = 0.989, P(X <= 8) = 0.996
+    assert binomial_quantile(100, 0.03, 0.025) == 0
+    assert binomial_quantile(100, 0.03, 0.975) == 7
+    assert binomial_quantile(100, 0.03, 0.999) == 9
+    assert binomial_quantile(0, 0.03, 0.975) == 0
+    assert binomial_quantile(50, 0.0, 0.975) == 0
+    assert binomial_quantile(50, 1.0, 0.025) == 50
+
+
+# ---------- coverage: do the 95% intervals contain the truth about 95% of the time? ----------
+# Each draws many samples from a known truth (seeded, so the result is fixed) and counts how
+# often the interval contains it. The bounds allow for simulation noise.
+
+def test_wilson_interval_coverage():
+    rng = np.random.default_rng(1)
+    p, n = 0.03, 500
+    hits = [lo <= p <= hi for lo, hi in (wilson_interval(int(k), n) for k in rng.binomial(n, p, 4000))]
+    assert 0.93 <= np.mean(hits) <= 0.97
+
+
+def test_byar_interval_coverage():
+    rng = np.random.default_rng(2)
+    expected = 20.0             # true O/E = 1: observed counts are Poisson with mean 20
+    intervals = (poisson_ratio_interval(int(o), expected) for o in rng.poisson(expected, 4000))
+    hits = [lo <= 1.0 <= hi for lo, hi in intervals]
+    assert 0.93 <= np.mean(hits) <= 0.97
+
+
+def test_woolf_interval_coverage():
+    rng = np.random.default_rng(3)
+    p1, p2, n = 0.05, 0.03, 1000
+    true_or = (p1 / (1 - p1)) / (p2 / (1 - p2))
+    hits = []
+    for a, c in zip(rng.binomial(n, p1, 4000), rng.binomial(n, p2, 4000)):
+        _, lo, hi = odds_ratio(int(a), int(n - a), int(c), int(n - c))
+        hits.append(lo <= true_or <= hi)
+    assert 0.93 <= np.mean(hits) <= 0.97

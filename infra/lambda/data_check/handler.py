@@ -92,3 +92,4 @@ def handler(event, context):
     return {"checked": results}
 
 # test: trigger the redeploy reminder (reverted before merge)
+# test 2: a second push must not post a second comment

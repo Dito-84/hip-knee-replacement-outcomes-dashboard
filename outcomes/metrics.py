@@ -206,11 +206,37 @@ def odds_ratio(a, b, c, d, z=1.96):
     return float(ratio), float(np.exp(np.log(ratio) - z * se)), float(np.exp(np.log(ratio) + z * se))
 
 
+def mantel_haenszel(tables, z=1.96):
+    """Odds ratio pooled across strata, with a 95% CI (Mantel-Haenszel, Robins-Breslow-Greenland variance).
+
+    `tables` is a list of (a, b, c, d) 2x2 tables, one per stratum, laid out as in
+    odds_ratio(). Strata with fewer than two people add nothing. Returns
+    (None, None, None) when the pooled ratio is undefined (no discordant information).
+    """
+    sum_r = sum_s = sum_pr = sum_ps_qr = sum_qs = 0.0
+    for a, b, c, d in tables:
+        n = a + b + c + d
+        if n < 2:
+            continue
+        r, s_ = a * d / n, b * c / n
+        p, q = (a + d) / n, (b + c) / n
+        sum_r += r; sum_s += s_
+        sum_pr += p * r; sum_ps_qr += p * s_ + q * r; sum_qs += q * s_
+    if sum_r == 0 or sum_s == 0:
+        return None, None, None
+    ratio = sum_r / sum_s
+    var = sum_pr / (2 * sum_r ** 2) + sum_ps_qr / (2 * sum_r * sum_s) + sum_qs / (2 * sum_s ** 2)
+    se = np.sqrt(var)
+    return float(ratio), float(np.exp(np.log(ratio) - z * se)), float(np.exp(np.log(ratio) + z * se))
+
+
 def hip_vs_knee_odds(stays, comps, hospital="All", population="all"):
     """Odds of each complication after a hip (THA) vs a knee (TKA) replacement.
 
-    Unadjusted. Stays with both procedures are left out, since they belong to
-    neither group. Ignores the procedure filter by design.
+    Two estimates: unadjusted (odds_ratio), and adjusted for age group
+    (mantel_haenszel, one 2x2 table per age group). Stays with both procedures
+    are left out, since they belong to neither group. Ignores the procedure
+    filter by design.
     """
     s = filter_stays(stays, hospital, "All", population)
     s = s[s["has_tha"] != s["has_tka"]]
@@ -225,8 +251,17 @@ def hip_vs_knee_odds(stays, comps, hospital="All", population="all"):
         a = len(keys & hip)
         k = len(keys) - a
         ratio, low, high = odds_ratio(a, n_hip - a, k, n_knee - k)
+        tables = []
+        for _, g in s.groupby("age_group", observed=True):
+            g_hip = g["has_tha"]
+            g_comp = g["stay_key"].isin(keys)
+            ga, gb = int((g_hip & g_comp).sum()), int((g_hip & ~g_comp).sum())
+            gc, gd = int((~g_hip & g_comp).sum()), int((~g_hip & ~g_comp).sum())
+            tables.append((ga, gb, gc, gd))
+        mh, mh_low, mh_high = mantel_haenszel(tables)
         rows.append({"type": t, "hip": a, "hip_n": n_hip, "knee": k, "knee_n": n_knee,
-                     "odds_ratio": ratio, "ci": [low, high]})
+                     "odds_ratio": ratio, "ci": [low, high],
+                     "age_adjusted_odds_ratio": mh, "age_adjusted_ci": [mh_low, mh_high]})
     return rows
 
 
@@ -256,7 +291,10 @@ def summarize(stays, comps, hospital="All", procedure="All", population="all"):
         "by_year": {
             "year": [int(y) for y in by_year.index],
             "stays": by_year["stays"].astype(int).tolist(),
+            "complications": by_year["complications"].astype(int).tolist(),
             "complication_rate": [_rate(c_, n) for c_, n in zip(by_year["complications"], by_year["stays"])],
+            "complication_ci": [list(wilson_interval(int(c_), int(n))) for c_, n in
+                                zip(by_year["complications"], by_year["stays"])],
         },
         "by_type": {"type": type_counts.index.tolist(), "count": type_counts.astype(int).tolist()},
         "timing_by_type": timing,

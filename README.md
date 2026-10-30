@@ -30,10 +30,10 @@ The original application and its patient-level data stay private. This repositor
 ## What it shows
 
 - **Headline measures:** surgeries, complication rate, 30-day complication readmission rate, mortality and average length of stay
-- **Trends by year,** including the spring 2020 drop in elective surgery
+- **Trends by year,** including the spring 2020 drop in elective surgery, with a 95% confidence band on each year's rate
 - **Complications by type:** the eight complications in the CMS measure (mechanical complications, infection, pulmonary embolism, pneumonia, sepsis, AMI, surgical site bleeding, death), split into during the stay and after discharge, with the rate of each per surgery
 - **Length of stay** overall and by complication status
-- **Hip vs knee odds ratios** for each complication, with 95% confidence intervals
+- **Hip vs knee odds ratios** for each complication, unadjusted and adjusted for age group (Mantel-Haenszel), with 95% confidence intervals
 - **Hospital comparison** with 95% confidence intervals, so small hospitals aren't over-read, plus an observed-vs-expected ratio adjusted for age group and procedure
 - **Complication rate by age group,** length of stay and time from discharge to readmission
 
@@ -63,6 +63,7 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, original-formula errors, O/E, odds ratios, synthetic data |
 | `docs/measure-crosswalk.md` | Each measure against its CMS definition and Python implementation |
 | `docs/glossary.md` | Plain-language definitions of every term on the dashboard |
+| `outcomes/suppression.py` | Optional small-cell suppression (counts of 1 to 10) for builds that will be shared |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
 | `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed |
 | `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda ([details](infra/README.md)) |
@@ -88,6 +89,16 @@ python build.py --data private/<your file>.xlsx --out private/site
 open private/site/index.html
 ```
 
+### Hide small counts before sharing
+
+CMS doesn't allow publishing counts of 1 to 10 people. Before sharing a build of real data, hide them:
+
+```bash
+python build.py --data private/<your file>.xlsx --out private/site --suppress-under 11
+```
+
+Every count from 1 to 10, and every rate, interval, average or ratio computed from one, is shown as "–". Zero is shown. This is primary suppression only: a hidden count can sometimes be worked out by subtraction (a total minus the other cells), so review the page before sharing it. It's off by default, because the synthetic data has no real people in it.
+
 ### Check the file first
 
 Before building from a real export, check it for problems that would quietly distort the measures:
@@ -112,7 +123,7 @@ It includes least-privilege IAM, automated cdk-nag security checks in CI, and a 
 
 ## Synthetic data
 
-`outcomes/synthetic.py` generates 4,000 fictional surgeries across three fictional hospitals (2018–2021). Volumes and rates follow published national patterns for Medicare hip and knee replacement: a complication rate around 3%, length of stay falling each year, and the 2020 elective surgery pause. Complications during the hospital stay add two days to the stay, and patients under 65 are flagged excluded, as in the CMS 65+ cohort. No values are derived from real patient records. Year-to-year swings in the charts are random noise, not findings.
+`outcomes/synthetic.py` generates 4,000 fictional surgeries across three fictional hospitals (2018–2021). Volumes and rates follow published national patterns for Medicare hip and knee replacement: a complication rate around 3%, length of stay falling each year, and the 2020 elective surgery pause. Complications during the hospital stay add two days to the stay, and patients under 65 are flagged excluded, as in the CMS 65+ cohort. No values are derived from real patient records. Year-to-year swings in the charts are random noise, not findings. The generator has no year effect, yet with this seed the 2019 and 2021 confidence bands barely overlap. Across other seeds the yearly rates average 2.6% to 3.1% with no pattern, so it's a useful reminder that one interval in twenty misses by chance.
 
 ## Built with
 

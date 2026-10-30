@@ -59,4 +59,8 @@ Plain-language definitions of the terms used on the dashboard. For how each meas
 
 **Observed vs expected (O/E):** a hospital's actual complications ÷ the number expected if its patients had the complication rates of all hospitals combined, for their age group and procedure. 1.0 means as expected; above 1.0 means more than expected. It adjusts for age and procedure only.
 
-**Odds ratio (hip vs knee):** the odds of a complication after a hip replacement ÷ the odds after a knee replacement. Odds are complications ÷ no complications. Above 1 means higher odds after a hip replacement. It's unadjusted, and surgeries with both procedures are left out. The interval is Woolf's method; when a cell of the 2×2 table is zero, 0.5 is added to every cell.
+**Odds ratio (hip vs knee):** the odds of a complication after a hip replacement ÷ the odds after a knee replacement. Odds are complications ÷ no complications. Above 1 means higher odds after a hip replacement. Surgeries with both procedures are left out. The unadjusted interval is Woolf's method; when a cell of the 2×2 table is zero, 0.5 is added to every cell.
+
+**Age-adjusted odds ratio:** the same comparison made within each age group, then pooled (the Mantel-Haenszel method), so a difference in age mix between hip and knee patients can't create or hide a difference.
+
+**Small-cell suppression:** hiding any count of 1 to 10 people, and anything computed from one, before a build is shared. CMS doesn't allow publishing smaller counts. Hidden values show as "–".

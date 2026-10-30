@@ -1,9 +1,12 @@
 """Comparisons: hospital observed vs expected, and hip vs knee odds ratios (unadjusted and age-adjusted)."""
 
+import numpy as np
 import pytest
 
 from helpers import complication_stay, load_rows, stay
-from outcomes.metrics import hip_vs_knee_odds, hospital_table
+from outcomes import synthetic
+from outcomes.load import load
+from outcomes.metrics import build_stays, funnel, hip_vs_knee_odds, hospital_table
 
 
 def test_oe_ratio_removes_a_difference_that_is_only_patient_mix(tmp_path):
@@ -62,3 +65,38 @@ def test_hip_vs_knee_age_adjusted(tmp_path):
     anyc = {r["type"]: r for r in hip_vs_knee_odds(stays, comps)}["Any complication"]
     assert anyc["odds_ratio"] == pytest.approx(3.0)
     assert anyc["age_adjusted_odds_ratio"] == pytest.approx(1.0)
+
+
+def test_funnel_centre_line_and_exact_limits(tmp_path):
+    # 20 knee surgeries, 2 with a complication -> centre rate 10%.
+    rows = ([complication_stay(dob=f"01/{d:02d}/1950") for d in (1, 2)]
+            + [stay(dob=f"02/{d:02d}/1950") for d in range(1, 19)])
+    stays, _ = load_rows(tmp_path, rows)
+    f = funnel(stays)
+    assert f["rate"] == pytest.approx(0.1)
+    assert f["n"][0] == 10          # the grid never starts below 10 surgeries
+    # Binomial(10, 0.1): the 97.5% quantile is 3 (P(X <= 2) = 0.930, P(X <= 3) = 0.987)
+    assert f["high_95"][0] == pytest.approx(3 / 10)
+    assert f["low_95"][0] == 0.0
+    # Limits narrow as volume grows
+    assert f["high_95"][-1] < f["high_95"][0]
+    assert f["high_99.8"][0] >= f["high_95"][0]
+
+
+@pytest.mark.slow
+def test_oe_interval_coverage_across_synthetic_datasets(tmp_path):
+    """End to end: across 30 generated datasets, the O/E interval should contain each hospital's
+    true relative risk (set in the generator) at least 95% of the time. It's conservative
+    (wider than nominal) because each hospital is part of its own reference group."""
+    from outcomes.synthetic import HOSPITALS
+    mean_risk = sum(share * risk for share, risk in HOSPITALS.values())
+    truth = {h: risk / mean_risk for h, (_, risk) in HOSPITALS.items()}
+    hits = []
+    for seed in range(1000, 1030):
+        path = tmp_path / f"s{seed}.csv"
+        synthetic.generate(seed=seed).to_csv(path, index=False)
+        stays, _ = build_stays(load(path))
+        for row in hospital_table(stays):
+            low, high = row["oe_ci"]
+            hits.append(low <= truth[row["hospital"]] <= high)
+    assert np.mean(hits) >= 0.95

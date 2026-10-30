@@ -53,6 +53,8 @@ Plain-language definitions of the terms used on the dashboard. For how each meas
 
 **95% confidence interval:** the range a rate would likely fall in if the same hospital and period were repeated. It's wide when a group has few surgeries. Rates use the Wilson interval.
 
+**Funnel plot:** each hospital's rate plotted against its number of surgeries, with control limits around the rate for all hospitals combined. The limits show how far a hospital's rate could stray by chance alone; they narrow as volume grows. A hospital outside the 99.8% limits is unlikely to differ by chance.
+
 **Observed rate:** complications ÷ surgeries, with no adjustment for how sick or old the patients were. Every rate on the dashboard is observed.
 
 **Risk-standardized complication rate (RSCR):** the rate CMS publishes. It adjusts for patient risk factors drawn from a year of earlier Medicare claims. This data doesn't have those, so the dashboard doesn't calculate it.

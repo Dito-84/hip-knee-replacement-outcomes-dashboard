@@ -127,8 +127,10 @@
       <div class="chart" id="c-type-rate"></div>
     </div>
     <div class="card">
-      <h2>Observed complication rate by hospital</h2>
-      <p class="note">Dots show the rate; lines show the 95% confidence interval. Not adjusted for patient mix.</p>
+      <h2>Observed complication rate by hospital: funnel plot</h2>
+      <p class="note">Each dot is a hospital, placed by its number of surgeries. The funnel shows where its rate would fall
+        by chance alone if its true rate matched all hospitals combined (95% and 99.8% limits). It narrows as volume grows,
+        so a small hospital needs a much larger difference to stand out. Not adjusted for patient mix.</p>
       <div class="chart" id="c-hospital"></div>
     </div>
     <div class="card">
@@ -269,6 +271,13 @@ function rateAxis(extra = {}) {
                          zeroline: false, tickfont: { color: css("--accent") } }, extra);
 }
 
+// Charts are drawn as images, so each gets a text summary of what it shows for screen readers.
+function describe(id, text) {
+  const el = document.getElementById(id);
+  el.setAttribute("role", "img");
+  el.setAttribute("aria-label", text);
+}
+
 function render() {
   const key = `${state.hospital}|${state.procedure}|${state.population}`;
   const v = DATA.views[key];
@@ -290,14 +299,22 @@ function render() {
   ], layout({ xaxis: { type: "category", tickfont: { color: muted } },
               yaxis2: rateAxis({ overlaying: "y", side: "right" }), margin: { l: 48, r: 56, t: 8, b: 32 } }), CONFIG);
 
+  describe("c-year", "Surgeries and complication rate by year: " + v.by_year.year.map((y, i) =>
+    `${y}: ${num(v.by_year.stays[i])} surgeries, ${pct(v.by_year.complication_rate[i])}` +
+    (v.by_year.complication_ci[i][0] == null ? "" : ` (95% CI ${pct(v.by_year.complication_ci[i][0])} to ${pct(v.by_year.complication_ci[i][1])})`)).join("; ") + ".");
+
   const tm = v.timing_by_type, order = tm.type.map((_, i) => i).reverse();
   Plotly.react("c-type", [
     { type: "bar", orientation: "h", name: "During stay", x: order.map(i => tm.during[i]), y: order.map(i => tm.type[i]),
-      marker: { color: warn }, hovertemplate: "%{y}: %{x} during the stay<extra></extra>" },
+      marker: { color: warn, pattern: { shape: "/", fillmode: "overlay", fgcolor: "rgba(255,255,255,0.75)", size: 6, solidity: 0.3 } },
+      hovertemplate: "%{y}: %{x} during the stay<extra></extra>" },
     { type: "bar", orientation: "h", name: "After discharge", x: order.map(i => tm.after[i]), y: order.map(i => tm.type[i]),
       marker: { color: accent }, hovertemplate: "%{y}: %{x} after discharge<extra></extra>" },
   ], layout({ barmode: "stack", showlegend: true, legend: { orientation: "h", y: -0.12 },
               margin: { l: 168, r: 24, t: 8, b: 48 }, xaxis: { gridcolor: css("--line"), zeroline: false } }), CONFIG);
+
+  describe("c-type", "Complication records by type, during the stay and after discharge: " +
+    tm.type.map((t, i) => `${t}: ${num(tm.during[i])} during, ${num(tm.after[i])} after`).join("; ") + ".");
 
   const rt = v.rate_by_type.slice().sort((a, b) => b.rate - a.rate);
   Plotly.react("c-type-rate", [{
@@ -309,17 +326,42 @@ function render() {
   }], layout({ margin: { l: 168, r: 24, t: 8, b: 40 }, xaxis: { tickformat: ".1%", rangemode: "tozero", gridcolor: css("--line"), zeroline: false },
                yaxis: { autorange: "reversed", gridcolor: "rgba(0,0,0,0)" } }), CONFIG);
 
+  describe("c-type-rate", "Complication rate by type: " + rt.map(r => `${r.type} ${pct(r.rate, 2)}`).join("; ") + ".");
+
   const hs = hospitals.filter(h => h.stays > 0);
-  Plotly.react("c-hospital", [{
-    type: "scatter", mode: "markers", y: hs.map(h => h.hospital), x: hs.map(h => h.complication_rate),
-    marker: { size: 12, color: hs.map(h => h.hospital === state.hospital ? warn : accent) },
-    error_x: { type: "data", symmetric: false, thickness: 2, width: 6, color: muted,
-               array: hs.map(h => h.complication_ci[1] - h.complication_rate),
-               arrayminus: hs.map(h => h.complication_rate - h.complication_ci[0]) },
-    customdata: hs.map(h => [h.complications, h.stays, h.complication_ci[0], h.complication_ci[1]]),
-    hovertemplate: "%{y}: %{x:.1%} (%{customdata[0]} of %{customdata[1]:,})<br>95% CI %{customdata[2]:.1%} – %{customdata[3]:.1%}<extra></extra>",
-  }], layout({ margin: { l: 96, r: 24, t: 8, b: 40 }, xaxis: { tickformat: ".0%", rangemode: "tozero", gridcolor: css("--line"), zeroline: false },
-               yaxis: { autorange: "reversed", gridcolor: "rgba(0,0,0,0)" } }), CONFIG);
+  const fn = DATA.views[`__funnel__|${state.procedure}|${state.population}`];
+  const limitAt = (key, n) => { let i = 0; while (i + 1 < fn.n.length && fn.n[i + 1] <= n) i++; return fn[key][i]; };
+  const funnelStatus = h => {
+    if (h.complication_rate == null || fn.rate == null) return "not shown";
+    if (h.complication_rate > limitAt("high_99.8", h.stays)) return "above the 99.8% limit";
+    if (h.complication_rate < limitAt("low_99.8", h.stays)) return "below the 99.8% limit";
+    if (h.complication_rate > limitAt("high_95", h.stays)) return "above the 95% limit";
+    if (h.complication_rate < limitAt("low_95", h.stays)) return "below the 95% limit";
+    return "within the limits";
+  };
+  // Alternate labels above and below in order of volume, so hospitals of similar size don't overlap
+  const bySize = hs.map((h, i) => [h.stays, i]).sort((x, y) => x[0] - y[0]).map(x => x[1]);
+  const labelSides = hs.map((_, i) => bySize.indexOf(i) % 2 ? "bottom center" : "top center");
+  const yTop = Math.max(...hs.map(h => h.complication_rate || 0), fn.rate || 0, limitAt("high_95", hs.length ? Math.min(...hs.map(h => h.stays)) : 0) || 0) * 1.6;
+  const limitLine = (key, dash, name) => ({ type: "scatter", mode: "lines", x: fn.n, y: fn[key], name, line: { shape: "hv", color: muted, width: 1.5, dash },
+    hovertemplate: `${name}: %{y:.1%} at %{x:,} surgeries<extra></extra>`, legendgroup: name, showlegend: key.startsWith("high") });
+  Plotly.react("c-hospital", [
+    limitLine("high_99.8", "dot", "99.8% limits"), limitLine("low_99.8", "dot", "99.8% limits"),
+    limitLine("high_95", "dash", "95% limits"), limitLine("low_95", "dash", "95% limits"),
+    { type: "scatter", mode: "lines", x: [fn.n[0], fn.n[fn.n.length - 1]], y: [fn.rate, fn.rate], name: "All hospitals",
+      line: { color: muted, width: 1 }, hovertemplate: "All hospitals: %{y:.1%}<extra></extra>" },
+    { type: "scatter", mode: "markers+text", name: "Hospitals", x: hs.map(h => h.stays), y: hs.map(h => h.complication_rate),
+      text: hs.map(h => h.hospital), textposition: labelSides, textfont: { color: css("--ink"), size: 11 }, cliponaxis: false,
+      marker: { size: hs.map(h => h.hospital === state.hospital ? 16 : 11), color: hs.map(h => h.hospital === state.hospital ? warn : accent),
+                line: { color: css("--panel"), width: 1.5 } },
+      customdata: hs.map(h => [h.complications, funnelStatus(h)]),
+      hovertemplate: "%{text}: %{y:.1%} (%{customdata[0]} of %{x:,})<br>%{customdata[1]}<extra></extra>" },
+  ], layout({ margin: { l: 48, r: 24, t: 16, b: 56 }, showlegend: true, legend: { orientation: "h", y: -0.22 },
+              xaxis: { type: "log", title: { text: "Surgeries (log scale)", font: { size: 12 } }, gridcolor: css("--line"), zeroline: false,
+                       tickvals: [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000], ticktext: ["10", "20", "50", "100", "200", "500", "1,000", "2,000", "5,000", "10,000"] },
+              yaxis: { tickformat: ".0%", range: [0, yTop || 0.1], gridcolor: css("--line"), zeroline: false } }), CONFIG);
+  describe("c-hospital", `Funnel plot. All hospitals combined: ${pct(fn.rate)}. ` +
+    hs.map(h => `${h.hospital}: ${num(h.stays)} surgeries, ${pct(h.complication_rate)}, ${funnelStatus(h)}`).join("; ") + ".");
 
   const ho = hs.filter(h => h.oe_ratio != null);
   Plotly.react("c-oe", [{
@@ -336,6 +378,9 @@ function render() {
                yaxis: { autorange: "reversed", gridcolor: "rgba(0,0,0,0)" },
                shapes: [{ type: "line", x0: 1, x1: 1, yref: "paper", y0: 0, y1: 1, line: { color: muted, dash: "dot", width: 1 } }] }), CONFIG);
 
+  describe("c-oe", "Observed vs expected complications by hospital: " +
+    ho.map(h => `${h.hospital} ${dec(h.oe_ratio, 2)} (95% interval ${dec(h.oe_ci[0], 2)} to ${dec(h.oe_ci[1], 2)})`).join("; ") + ".");
+
   Plotly.react("c-age", [
     { type: "bar", x: v.by_age.group, y: v.by_age.stays, marker: { color: bar },
       hovertemplate: "%{x}: %{y:,} surgeries<extra></extra>" },
@@ -344,10 +389,15 @@ function render() {
       hovertemplate: "%{x}: %{y:.1%} complication rate<extra></extra>" },
   ], layout({ yaxis2: rateAxis({ overlaying: "y", side: "right" }), margin: { l: 48, r: 56, t: 8, b: 40 } }), CONFIG);
 
+  describe("c-age", "Surgeries and complication rate by age group: " +
+    v.by_age.group.map((g, i) => `${g}: ${num(v.by_age.stays[i])} surgeries, ${pct(v.by_age.complication_rate[i])}`).join("; ") + ".");
+
   Plotly.react("c-los", [{
     type: "bar", x: v.los.days, y: v.los.stays, marker: { color: bar },
     hovertemplate: "%{x} days: %{y:,} surgeries<extra></extra>",
   }], layout({ xaxis: { type: "category", title: { text: "Days", font: { size: 12 } } } }), CONFIG);
+
+  describe("c-los", "Length of stay in days: " + v.los.days.map((d, i) => `${d} ${d === "1" ? "day" : "days"}: ${num(v.los.stays[i])} surgeries`).join("; ") + ".");
 
   const ls = v.los_by_status;
   Plotly.react("c-los-status", [{
@@ -355,6 +405,9 @@ function render() {
     text: ls.avg_los.map(d => d == null ? "" : d.toFixed(2) + " d"), textposition: "outside", cliponaxis: false,
     customdata: ls.stays, hovertemplate: "%{x}: %{y:.2f} days (%{customdata:,} surgeries)<extra></extra>",
   }], layout({ xaxis: { type: "category", tickfont: { color: muted } }, yaxis: { rangemode: "tozero", gridcolor: css("--line"), zeroline: false, title: { text: "Days", font: { size: 12 } } } }), CONFIG);
+
+  describe("c-los-status", "Average length of stay: " +
+    ls.status.map((st, i) => `${st}: ${dec(ls.avg_los[i], 2)} days (${num(ls.stays[i])} surgeries)`).join("; ") + ".");
 
   const od = v.hip_vs_knee.filter(r => r.odds_ratio != null);
   const om = v.hip_vs_knee.filter(r => r.age_adjusted_odds_ratio != null);
@@ -378,10 +431,16 @@ function render() {
                yaxis: { autorange: "reversed", gridcolor: "rgba(0,0,0,0)" },
                shapes: [{ type: "line", x0: 1, x1: 1, yref: "paper", y0: 0, y1: 1, line: { color: muted, dash: "dot", width: 1 } }] }), CONFIG);
 
+  describe("c-odds", "Odds ratio of each complication, hip vs knee, unadjusted and age-adjusted: " +
+    v.hip_vs_knee.map(r => `${r.type}: ${dec(r.odds_ratio, 2)} unadjusted, ${dec(r.age_adjusted_odds_ratio, 2)} age-adjusted`).join("; ") + ".");
+
   Plotly.react("c-readmit", [{
     type: "bar", x: v.readmit_days.bucket, y: v.readmit_days.stays, marker: { color: accent },
     hovertemplate: "%{x} days: %{y} patients<extra></extra>",
   }], layout({ xaxis: { type: "category", title: { text: "Days after discharge", font: { size: 12 } } } }), CONFIG);
+
+  describe("c-readmit", "Days from discharge to complication readmission: " +
+    v.readmit_days.bucket.map((b, i) => `${b} days: ${num(v.readmit_days.stays[i])} patients`).join("; ") + ".");
 
   document.getElementById("t-hospital").innerHTML =
     "<thead><tr><th>Hospital</th><th>Surgeries</th><th>Complication</th><th>O/E</th><th>30-day readmit</th><th>Avg stay</th></tr></thead><tbody>" +

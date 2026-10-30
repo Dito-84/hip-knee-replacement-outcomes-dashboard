@@ -29,6 +29,10 @@ def test_suppression_hides_counts_of_1_to_10_and_what_is_computed_from_them(tmp_
     row = hidden["views"]["__hospitals__|All|all"][0]
     assert row["hospital"] == "Hospital A"
     assert row["complications"] is None and row["oe_ratio"] is None and row["complication_ci"] == [None, None]
+    funnel = hidden["views"]["__funnel__|All|all"]
+    # 3 complications in all, so the centre line and limits are hidden; the volume axis isn't a count of outcomes
+    assert funnel["rate"] is None and set(funnel["high_95"]) == {None}
+    assert funnel["n"] == data["views"]["__funnel__|All|all"]["n"]
     assert hidden["suppressed_under"] == 11
     assert data["views"]["All|All|all"]["kpis"]["complications"] == 3     # the original is untouched
 

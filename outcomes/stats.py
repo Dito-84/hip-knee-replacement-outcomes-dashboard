@@ -4,6 +4,8 @@ Pure functions of counts, with no pandas, so each can be checked against a
 textbook example (see tests/test_stats.py).
 """
 
+from math import exp, lgamma, log
+
 import numpy as np
 
 
@@ -68,3 +70,25 @@ def poisson_ratio_interval(observed, expected, z=1.96):
     low = 0.0 if o == 0 else o * (1 - 1 / (9 * o) - z / (3 * np.sqrt(o))) ** 3
     high = (o + 1) * (1 - 1 / (9 * (o + 1)) + z / (3 * np.sqrt(o + 1))) ** 3
     return float(low / expected), float(high / expected)
+
+
+def binomial_quantile(n, p, q):
+    """Smallest count r with P(X <= r) >= q, for X ~ Binomial(n, p).
+
+    Used for funnel-plot control limits: exact, so it stays accurate at the low
+    rates (about 3%) where the normal approximation breaks down.
+    """
+    if n <= 0:
+        return 0
+    if p <= 0:
+        return 0
+    if p >= 1:
+        return n
+    log_p, log_q = log(p), log(1 - p)
+    log_n_fact = lgamma(n + 1)
+    cdf = 0.0
+    for r in range(n + 1):
+        cdf += exp(log_n_fact - lgamma(r + 1) - lgamma(n - r + 1) + r * log_p + (n - r) * log_q)
+        if cdf >= q - 1e-12:
+            return r
+    return n

@@ -86,7 +86,12 @@ def suppress(data, threshold=11):
     """Return a copy of the dashboard data with small counts hidden (see module docstring)."""
     out = copy.deepcopy(data)
     for key, view in out["views"].items():
-        if key.startswith("__hospitals__"):
+        if key.startswith("__funnel__"):
+            if _small(view["complications"], threshold) or _small(view["stays"], threshold):
+                for k in view:
+                    if k != "n":
+                        view[k] = [None] * len(view["n"]) if isinstance(view[k], list) else None
+        elif key.startswith("__hospitals__"):
             for row in view:
                 _suppress_kpis(row, threshold)
         else:

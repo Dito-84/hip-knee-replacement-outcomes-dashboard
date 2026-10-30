@@ -99,10 +99,21 @@ Some patterns are chance. With this seed, the 2019 and 2021 complication rates b
 
 - **No patient identifier.** A surgery is identified by hospital, birth date and stay dates, so two patients with identical values would merge. That's rare, but possible.
 - **Adjustment is limited to what's in the file.** O/E and the age-adjusted odds ratios adjust only for age and procedure, so they can't stand in for the CMS model.
-- **The O/E reference includes the hospital being compared**, which pulls the largest hospital slightly toward 1.0.
+- **The O/E reference includes the hospital being compared**, which pulls the largest hospital slightly toward 1.0 and makes the O/E interval conservative (see below).
 - **Many intervals on one page.** About 1 in 20 will exclude the true value by chance alone.
 
-## What I'd do next
+## Checking the intervals themselves
 
-- A **funnel plot** for hospitals: rate against volume, with control limits that narrow as volume grows. It's the standard way to compare providers in healthcare quality work.
-- A **simulation test** that generates many seeds and checks each 95% interval contains the true value about 95% of the time.
+Every rate on the page has a 95% interval, so it's worth asking whether they really contain the truth 95% of the time. Synthetic data makes this testable, because the truth is known. The tests draw thousands of samples from a known rate and count how often each interval contains it:
+
+| Interval | Used for | Contains the truth |
+|---|---|---|
+| Wilson | Rates (complications, readmissions, by type, by year) | 95.3% |
+| Byar (Poisson) | Observed vs expected | 95.4% |
+| Woolf | Odds ratios | 95.7% |
+
+A slower test runs the whole pipeline on 30 generated datasets and checks each hospital's O/E interval against its true risk from the generator. It contained the truth in **all 90 cases**. Getting 90 of 90 by chance at a true 95% would happen less than 1% of the time, so the O/E interval is *conservative*: wider than it needs to be. The reason is the design choice noted under limitations: each hospital is part of its own reference group, so its observed and expected counts move together, while the interval assumes the expected count is fixed. Too wide is the safe direction, since it won't flag a hospital wrongly, but it means O/E is slow to flag one. The test fails if coverage ever drops below 95%.
+
+## Comparing hospitals with a funnel plot
+
+The hospital chart is a **funnel plot**: each hospital's rate against its number of surgeries, with control limits around the rate for all hospitals combined. It's the standard way to compare providers in healthcare quality work. The limits are exact binomial limits rather than the usual normal approximation, which is poor at a 3% rate. At about 660 surgeries, Hospital A's size, the 95% limits run from about 1.9% to 4.5%. A's observed 3.5% sits well inside, which is the sample-size finding above made visible.

@@ -96,7 +96,7 @@ Before building from a real export, check it for problems that would quietly dis
 python scripts/check_data.py private/<your file>.xlsx
 ```
 
-It checks for discharges before admissions, readmissions dated before discharge, implausible ages, missing birth dates, records with no procedure, unnamed complications, and duplicate rows that aren't flagged as additional complication records. It exits with an error if any finding would make the measures wrong.
+It checks for discharges before admissions, readmissions dated before discharge, implausible ages, missing birth dates, records with no procedure, unnamed complications, and duplicate rows that aren't flagged as additional complication records. It exits with an error if any finding would make the measures wrong. `build.py` runs the same checks on every build and stops on an error; `--skip-checks` overrides that once you've reviewed the findings.
 
 With [dstoolkit](https://github.com/Dito-84/dstoolkit) installed (`pip install -r requirements-optional.txt`), it also writes a full profile of every column to `private/data_check.html`. Blank complication, readmission and death fields mean "didn't happen" in this data, so the profile is told not to suggest filling or dropping them. The report contains record-level details: it's only ever written inside `private/`, and it should stay on your computer.
 
@@ -112,7 +112,7 @@ It includes least-privilege IAM, automated cdk-nag security checks in CI, and a 
 
 ## Synthetic data
 
-`outcomes/synthetic.py` generates 4,000 fictional surgeries across three fictional hospitals (2018–2021). Volumes and rates follow published national patterns for Medicare hip and knee replacement: a complication rate around 3%, length of stay falling each year, and the 2020 elective surgery pause. Complications during the hospital stay add two days to the stay. No values are derived from real patient records. Year-to-year swings in the charts are random noise, not findings.
+`outcomes/synthetic.py` generates 4,000 fictional surgeries across three fictional hospitals (2018–2021). Volumes and rates follow published national patterns for Medicare hip and knee replacement: a complication rate around 3%, length of stay falling each year, and the 2020 elective surgery pause. Complications during the hospital stay add two days to the stay, and patients under 65 are flagged excluded, as in the CMS 65+ cohort. No values are derived from real patient records. Year-to-year swings in the charts are random noise, not findings.
 
 ## Built with
 

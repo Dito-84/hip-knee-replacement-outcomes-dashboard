@@ -9,6 +9,10 @@ Your own data, kept on your computer:
 A build from any file other than the synthetic dataset must be written
 inside private/ (which git ignores) or outside this repository, so real
 results can't be committed by accident.
+
+Every build runs the data-quality checks in outcomes/quality.py first and
+stops if one finds an error that would make the measures wrong. Use
+--skip-checks only after reviewing the findings with scripts/check_data.py.
 """
 
 import argparse
@@ -18,6 +22,7 @@ from pathlib import Path
 
 from outcomes.load import DataFormatError, load
 from outcomes.metrics import build_dashboard_data
+from outcomes.quality import run_checks
 
 ROOT = Path(__file__).resolve().parent
 SYNTHETIC = ROOT / "data" / "synthetic_discharges.csv"
@@ -37,6 +42,8 @@ def main(argv=None):
     parser.add_argument("--sheet", help="Excel sheet name (default: first sheet with the expected headers)")
     parser.add_argument("--out", type=Path, default=ROOT / "_site", help="output folder")
     parser.add_argument("--label", help="description shown in the page banner for non-synthetic data")
+    parser.add_argument("--skip-checks", action="store_true",
+                        help="build even if a data-quality check finds an error (not recommended)")
     args = parser.parse_args(argv)
 
     synthetic = args.data.resolve() == SYNTHETIC.resolve()
@@ -48,6 +55,14 @@ def main(argv=None):
         records = load(args.data, sheet=args.sheet)
     except (DataFormatError, FileNotFoundError) as err:
         sys.exit(f"Could not read {args.data}: {err}")
+
+    findings = run_checks(records)
+    for f in findings:
+        print(f"{f.severity.upper()}: {f.message}", file=sys.stderr)
+    errors = [f for f in findings if f.severity == "error"]
+    if errors and not args.skip_checks:
+        sys.exit(f"Stopped: {len(errors)} data-quality check(s) found errors that would make the measures wrong.\n"
+                 f"Fix the file, or review it with scripts/check_data.py and rerun with --skip-checks.")
 
     label = "synthetic" if synthetic else (args.label or f"{args.data.name}")
     data = build_dashboard_data(records, label)

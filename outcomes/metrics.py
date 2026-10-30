@@ -59,6 +59,9 @@ def build_stays(records):
                              "complication_admit_date", "discharge_date", "covid_excluded"]].copy()
     comps["readmit_days"] = (comps["complication_admit_date"] - comps["discharge_date"]).dt.days
     comps.loc[comps["during_index_stay"], "readmit_days"] = np.nan
+    # A readmission dated before discharge is a data error (outcomes/quality.py flags it),
+    # not a readmission on day 0 or earlier, so it never counts toward the 30-day rate.
+    comps.loc[comps["readmit_days"] < 0, "readmit_days"] = np.nan
 
     stays = df.groupby("stay_key", sort=False).agg(
         hospital=("hospital", "first"),

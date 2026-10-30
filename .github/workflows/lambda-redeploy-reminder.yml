@@ -1,0 +1,63 @@
+name: Lambda redeploy reminder
+
+# Merging to main deploys the website only. The AWS stack, including the data-check
+# Lambda, changes only when someone runs `cdk deploy` from infra/. This workflow
+# comments once on any pull request that changes what that deploy would ship, so
+# the deployed Lambda doesn't quietly fall behind main.
+
+on:
+  pull_request:
+    paths:
+      # The stack definition
+      - "infra/app.py"
+      - "infra/cdk.json"
+      - "infra/requirements.txt"
+      - "infra/dashboard_infra/**"
+      # The Lambda bundle: its handler and requirements, plus every outcomes/*.py
+      # (see infra/dashboard_infra/bundling.py)
+      - "infra/lambda/**"
+      - "outcomes/*.py"
+
+# Only what's needed to comment. Pull requests from forks and Dependabot get a
+# read-only token, so the comment step may fail there; the warning annotation still shows.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flag the pull request
+        run: |
+          echo "::warning title=Redeploy the AWS stack after merging::This pull request changes the AWS stack or the data-check Lambda. Merging deploys the website only; run cdk diff, then cdk deploy, from infra/."
+
+      - name: Comment once
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- lambda-redeploy-reminder -->"
+          if gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[].body' | grep -qF "$marker"; then
+            echo "Reminder already posted."
+            exit 0
+          fi
+          files=$(gh pr diff "$PR" --repo "$REPO" --name-only \
+            | grep -E '^(infra/(app\.py|cdk\.json|requirements\.txt|dashboard_infra/|lambda/)|outcomes/[^/]+\.py$)' \
+            | sed 's/^/- `/; s/$/`/')
+          gh pr comment "$PR" --repo "$REPO" --body "$marker
+          **Redeploy the AWS stack after merging.** This pull request changes what \`cdk deploy\` ships:
+
+          $files
+
+          Merging deploys the website only; the data-check Lambda and the rest of the stack stay on their current version until you run, from \`infra/\`:
+
+          \`\`\`bash
+          npx aws-cdk@2 diff   -c alert_email=you@example.com
+          npx aws-cdk@2 deploy -c alert_email=you@example.com
+          \`\`\`
+
+          Use the same \`-c\` options as the first deploy (and \`-c existing_oidc_provider_arn=…\` if you used it): they aren't saved in \`cdk.json\`, so leaving one out removes the email and budget alerts. The diff should show only what this pull request changed. Steps: [infra/README.md → Deploy it]($SERVER/$REPO/blob/main/infra/README.md#deploy-it)."

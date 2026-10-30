@@ -28,7 +28,7 @@ pytest==9.2.0
     #   pytest-cov
 pytest-cov==7.1.0
     # via hip-knee-outcomes (pyproject.toml)
-python-dateutil==2.9.0.post0
+python-dateutil==3.0.0
     # via
     #   hip-knee-outcomes (pyproject.toml)
     #   pandas

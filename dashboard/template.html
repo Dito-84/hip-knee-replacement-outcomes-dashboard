@@ -113,8 +113,14 @@
     </div>
     <div class="card">
       <h2>Complications by type</h2>
-      <p class="note">Complication records; a patient can have more than one.</p>
+      <p class="note">Complication records, split by whether the complication happened during the hospital stay or
+        after discharge. A patient can have more than one.</p>
       <div class="chart" id="c-type"></div>
+    </div>
+    <div class="card">
+      <h2>Complication rate by type</h2>
+      <p class="note">Share of surgeries with each complication. Lines show the 95% confidence interval.</p>
+      <div class="chart" id="c-type-rate"></div>
     </div>
     <div class="card">
       <h2>Observed complication rate by hospital</h2>
@@ -138,11 +144,23 @@
       <div class="chart" id="c-los"></div>
     </div>
     <div class="card">
+      <h2>Length of stay by complication status</h2>
+      <p class="note">Average days in hospital for surgeries with no complication, a complication during the stay,
+        or complications only after discharge.</p>
+      <div class="chart" id="c-los-status"></div>
+    </div>
+    <div class="card">
       <h2>Time to complication readmission</h2>
       <p class="note">Days from discharge to readmission for a complication.</p>
       <div class="chart" id="c-readmit"></div>
     </div>
-    <div class="card">
+    <div class="card wide">
+      <h2>Hip vs knee: odds of each complication</h2>
+      <p class="note">Odds ratio, hip ÷ knee, with 95% confidence interval (log scale). Above 1 means higher odds
+        after a hip replacement. Unadjusted; ignores the procedure filter and leaves out surgeries with both.</p>
+      <div class="chart" id="c-odds"></div>
+    </div>
+    <div class="card wide">
       <h2>Hospital comparison</h2>
       <p class="note">Uses the procedure and population filters.</p>
       <div class="table-scroll"><table id="t-hospital"></table></div>
@@ -162,9 +180,13 @@
         rate for patient risk factors taken from a year of earlier Medicare claims, which this data doesn't have. Rates here are
         complications ÷ surgeries, so hospitals with older or sicker patients look worse. The observed-vs-expected
         chart adjusts for age group and procedure only.</li>
+      <li><strong>Odds ratios</strong> compare the odds of a complication after a hip replacement with the odds after
+        a knee replacement (2×2 table, Woolf 95% interval; 0.5 is added to every cell when one is zero).</li>
       <li>Complication windows follow CMS: AMI, pneumonia and sepsis within 7 days; surgical site bleeding,
         pulmonary embolism and death within 30 days; mechanical complications and infection within 90 days.</li>
     </ul>
+    <p>Definitions: <a href="https://github.com/Dito-84/hip-knee-replacement-outcomes-dashboard/blob/main/docs/glossary.md">glossary</a>
+      · <a href="https://github.com/Dito-84/hip-knee-replacement-outcomes-dashboard/blob/main/docs/measure-crosswalk.md">measure crosswalk</a></p>
     <p id="source-note"></p>
   </footer>
 </div>
@@ -256,12 +278,24 @@ function render() {
   ], layout({ xaxis: { type: "category", tickfont: { color: muted } },
               yaxis2: rateAxis({ overlaying: "y", side: "right" }), margin: { l: 48, r: 56, t: 8, b: 32 } }), CONFIG);
 
-  const t = v.by_type, order = t.count.map((c, i) => i).reverse();
-  Plotly.react("c-type", [{
-    type: "bar", orientation: "h", x: order.map(i => t.count[i]), y: order.map(i => t.type[i]),
-    marker: { color: accent }, text: order.map(i => t.count[i]), textposition: "outside", cliponaxis: false,
-    hovertemplate: "%{y}: %{x} records<extra></extra>",
-  }], layout({ margin: { l: 168, r: 32, t: 8, b: 32 }, xaxis: { visible: false } }), CONFIG);
+  const tm = v.timing_by_type, order = tm.type.map((_, i) => i).reverse();
+  Plotly.react("c-type", [
+    { type: "bar", orientation: "h", name: "During stay", x: order.map(i => tm.during[i]), y: order.map(i => tm.type[i]),
+      marker: { color: warn }, hovertemplate: "%{y}: %{x} during the stay<extra></extra>" },
+    { type: "bar", orientation: "h", name: "After discharge", x: order.map(i => tm.after[i]), y: order.map(i => tm.type[i]),
+      marker: { color: accent }, hovertemplate: "%{y}: %{x} after discharge<extra></extra>" },
+  ], layout({ barmode: "stack", showlegend: true, legend: { orientation: "h", y: -0.12 },
+              margin: { l: 168, r: 24, t: 8, b: 48 }, xaxis: { gridcolor: css("--line"), zeroline: false } }), CONFIG);
+
+  const rt = v.rate_by_type.slice().sort((a, b) => b.rate - a.rate);
+  Plotly.react("c-type-rate", [{
+    type: "scatter", mode: "markers", y: rt.map(r => r.type), x: rt.map(r => r.rate), marker: { size: 10, color: accent },
+    error_x: { type: "data", symmetric: false, thickness: 2, width: 5, color: muted,
+               array: rt.map(r => r.ci[1] - r.rate), arrayminus: rt.map(r => r.rate - r.ci[0]) },
+    customdata: rt.map(r => [r.stays, v.kpis.stays, r.ci[0], r.ci[1]]),
+    hovertemplate: "%{y}: %{x:.2%} (%{customdata[0]} of %{customdata[1]:,})<br>95% CI %{customdata[2]:.2%} – %{customdata[3]:.2%}<extra></extra>",
+  }], layout({ margin: { l: 168, r: 24, t: 8, b: 40 }, xaxis: { tickformat: ".1%", rangemode: "tozero", gridcolor: css("--line"), zeroline: false },
+               yaxis: { autorange: "reversed", gridcolor: "rgba(0,0,0,0)" } }), CONFIG);
 
   const hs = hospitals.filter(h => h.stays > 0);
   Plotly.react("c-hospital", [{
@@ -302,6 +336,28 @@ function render() {
     type: "bar", x: v.los.days, y: v.los.stays, marker: { color: bar },
     hovertemplate: "%{x} days: %{y:,} surgeries<extra></extra>",
   }], layout({ xaxis: { type: "category", title: { text: "Days", font: { size: 12 } } } }), CONFIG);
+
+  const ls = v.los_by_status;
+  Plotly.react("c-los-status", [{
+    type: "bar", x: ["No complication", "During stay", "After discharge only"], y: ls.avg_los, marker: { color: [bar, warn, accent] },
+    text: ls.avg_los.map(d => d == null ? "" : d.toFixed(2) + " d"), textposition: "outside", cliponaxis: false,
+    customdata: ls.stays, hovertemplate: "%{x}: %{y:.2f} days (%{customdata:,} surgeries)<extra></extra>",
+  }], layout({ xaxis: { type: "category", tickfont: { color: muted } }, yaxis: { rangemode: "tozero", gridcolor: css("--line"), zeroline: false, title: { text: "Days", font: { size: 12 } } } }), CONFIG);
+
+  const od = v.hip_vs_knee.filter(r => r.odds_ratio != null);
+  Plotly.react("c-odds", [{
+    type: "scatter", mode: "markers", y: od.map(r => r.type), x: od.map(r => r.odds_ratio),
+    marker: { size: 10, color: od.map(r => r.type === "Any complication" ? warn : accent) },
+    error_x: { type: "data", symmetric: false, thickness: 2, width: 5, color: muted,
+               array: od.map(r => r.ci[1] - r.odds_ratio), arrayminus: od.map(r => r.odds_ratio - r.ci[0]) },
+    customdata: od.map(r => [r.hip, r.hip_n, r.knee, r.knee_n, r.ci[0], r.ci[1]]),
+    hovertemplate: "%{y}: OR %{x:.2f}<br>Hip %{customdata[0]} of %{customdata[1]:,} · Knee %{customdata[2]} of %{customdata[3]:,}" +
+      "<br>95% CI %{customdata[4]:.2f} – %{customdata[5]:.2f}<extra></extra>",
+  }], layout({ margin: { l: 168, r: 24, t: 8, b: 40 },
+               xaxis: { type: "log", gridcolor: css("--line"), zeroline: false,
+                        tickvals: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20], ticktext: ["0.05", "0.1", "0.2", "0.5", "1", "2", "5", "10", "20"] },
+               yaxis: { autorange: "reversed", gridcolor: "rgba(0,0,0,0)" },
+               shapes: [{ type: "line", x0: 1, x1: 1, yref: "paper", y0: 0, y1: 1, line: { color: muted, dash: "dot", width: 1 } }] }), CONFIG);
 
   Plotly.react("c-readmit", [{
     type: "bar", x: v.readmit_days.bucket, y: v.readmit_days.stays, marker: { color: accent },

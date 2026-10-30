@@ -24,6 +24,7 @@ START, END = pd.Timestamp("2018-01-01"), pd.Timestamp("2021-12-31")
 HOSPITALS = {"Hospital A": (0.16, 1.20), "Hospital B": (0.44, 0.92), "Hospital C": (0.40, 1.02)}
 TOTAL_STAYS = 4000
 BASE_COMPLICATION_RATE = 0.024
+IN_STAY_EXTRA_DAYS = 2  # extra length of stay when a complication happens during the stay
 
 # Share of complications by type, chance it happens during the index stay,
 # and the window (days after discharge) the measure counts it in
@@ -142,6 +143,7 @@ def generate(n_stays=TOTAL_STAYS, seed=SEED):
         n_records = 2 if rng.random() < 0.12 else 1
         chosen = rng.choice(len(types), size=n_records, replace=False, p=type_p)
         readmit_date = None
+        first_row = len(rows)
         for i, t_idx in enumerate(chosen):
             ctype = types[t_idx]
             _, p_during, window = COMPLICATIONS[ctype]
@@ -166,6 +168,16 @@ def generate(n_stays=TOTAL_STAYS, seed=SEED):
                 row["readmit_same_hospital"] = _yes_no(same)
                 row["readmit_provider_id"] = "" if same else f"10{rng.integers(1000, 9999)}"
             rows.append(row)
+
+        # A complication during the stay keeps the patient in hospital longer. Applied after
+        # the random draws, so the random sequence (and every other synthetic stay) is unchanged.
+        stay_rows = rows[first_row:]
+        if any(r["during_index_stay"] == "Yes" for r in stay_rows):
+            extra = pd.Timedelta(days=min(los + IN_STAY_EXTRA_DAYS, 14) - los)
+            for r in stay_rows:
+                for col in ("discharge_date", "complication_admit_date", "death_date"):
+                    if r.get(col) is not None:
+                        r[col] = r[col] + extra
 
     df = pd.DataFrame(rows)
     # Order and name columns exactly like the source spreadsheet

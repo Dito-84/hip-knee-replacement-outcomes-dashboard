@@ -31,7 +31,9 @@ The original application and its patient-level data stay private. This repositor
 
 - **Headline measures:** surgeries, complication rate, 30-day complication readmission rate, mortality and average length of stay
 - **Trends by year,** including the spring 2020 drop in elective surgery
-- **Complications by type:** the eight complications in the CMS measure (mechanical complications, infection, pulmonary embolism, pneumonia, sepsis, AMI, surgical site bleeding, death)
+- **Complications by type:** the eight complications in the CMS measure (mechanical complications, infection, pulmonary embolism, pneumonia, sepsis, AMI, surgical site bleeding, death), split into during the stay and after discharge, with the rate of each per surgery
+- **Length of stay** overall and by complication status
+- **Hip vs knee odds ratios** for each complication, with 95% confidence intervals
 - **Hospital comparison** with 95% confidence intervals, so small hospitals aren't over-read, plus an observed-vs-expected ratio adjusted for age group and procedure
 - **Complication rate by age group,** length of stay and time from discharge to readmission
 
@@ -46,7 +48,7 @@ Rebuilding the dashboard surfaced two issues in the original Qlik measures, both
 
 A later review of the original formulas found four more errors in individual Qlik measures: knee rates with a hip denominator, an exclusion-adjusted mortality rate that applied exclusions to the denominator only, age calculated at discharge instead of admission, and age bands with gaps. None carried over, because the rebuild computes every rate from one filtered set of stays. Each has a test with a small made-up case.
 
-The rates are observed, not risk-standardized like the published CMS RSCR, which needs patient risk factors from Medicare claims that this data doesn't have. For hospital comparisons, an **observed-vs-expected ratio** adjusts for age group and procedure, the two risk factors the data does have. The **[measure crosswalk](docs/measure-crosswalk.md)** maps each measure to its CMS definition and its Python implementation.
+The rates are observed, not risk-standardized like the published CMS RSCR, which needs patient risk factors from Medicare claims that this data doesn't have. For hospital comparisons, an **observed-vs-expected ratio** adjusts for age group and procedure, the two risk factors the data does have. The **[measure crosswalk](docs/measure-crosswalk.md)** maps each measure to its CMS definition and its Python implementation, and the **[glossary](docs/glossary.md)** defines every term in plain language.
 
 ## Project structure
 
@@ -58,8 +60,9 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `outcomes/synthetic.py` | Generates the synthetic dataset (seeded, reproducible) |
 | `dashboard/template.html` | The dashboard page (Plotly.js), filled with precomputed data at build time |
 | `build.py` | Builds a single self-contained `index.html` |
-| `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, original-formula errors, synthetic data |
+| `tests/` | pytest suite: header matching, stay-level counting, 30-day window, filters, original-formula errors, O/E, odds ratios, synthetic data |
 | `docs/measure-crosswalk.md` | Each measure against its CMS definition and Python implementation |
+| `docs/glossary.md` | Plain-language definitions of every term on the dashboard |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
 | `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed |
 | `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda ([details](infra/README.md)) |
@@ -109,7 +112,7 @@ It includes least-privilege IAM, automated cdk-nag security checks in CI, and a 
 
 ## Synthetic data
 
-`outcomes/synthetic.py` generates 4,000 fictional surgeries across three fictional hospitals (2018–2021). Volumes and rates follow published national patterns for Medicare hip and knee replacement: a complication rate around 3%, length of stay falling each year, and the 2020 elective surgery pause. No values are derived from real patient records. Year-to-year swings in the charts are random noise, not findings.
+`outcomes/synthetic.py` generates 4,000 fictional surgeries across three fictional hospitals (2018–2021). Volumes and rates follow published national patterns for Medicare hip and knee replacement: a complication rate around 3%, length of stay falling each year, and the 2020 elective surgery pause. Complications during the hospital stay add two days to the stay. No values are derived from real patient records. Year-to-year swings in the charts are random noise, not findings.
 
 ## Built with
 

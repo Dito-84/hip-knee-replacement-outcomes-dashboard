@@ -115,6 +115,10 @@ You need an AWS account, plus [Homebrew](https://brew.sh) on a Mac.
    aws s3 cp s3://<IntakeBucketName>/reports/synthetic_discharges.csv.json -
    ```
 
+### Redeploying after changes
+
+Merging to `main` deploys the website only. The stack, including the data-check Lambda, changes only when you run `cdk deploy`. So a workflow ([`lambda-redeploy-reminder.yml`](../.github/workflows/lambda-redeploy-reminder.yml)) comments on any pull request that changes what the deploy would ship: the stack definition, the Lambda's handler or requirements, or the `outcomes/` code it bundles. After merging one of those, run `cdk diff` and then `cdk deploy` with the same `-c` options as your first deploy. They aren't saved in `cdk.json`, so leaving one out removes the email and budget alerts.
+
 ### Using this with another repository
 
 `cdk.json` names the repository allowed to deploy, together with GitHub's permanent owner and repository IDs. Repositories created after July 15, 2026 send these IDs when they sign in to AWS, in the form `repo:owner@<owner id>/name@<repo id>:ref:refs/heads/main`. To use the stack with a different repository, look up both IDs:

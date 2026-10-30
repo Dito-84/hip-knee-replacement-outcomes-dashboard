@@ -90,3 +90,5 @@ def handler(event, context):
         print(json.dumps({"file": name, "status": report["status"], "report": report_key}))
         results.append({"key": key, "status": report["status"]})
     return {"checked": results}
+
+# test: trigger the redeploy reminder (reverted before merge)

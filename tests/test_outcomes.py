@@ -5,8 +5,8 @@ import pytest
 
 from outcomes import synthetic
 from outcomes.load import DataFormatError, load
-from outcomes.metrics import (build_dashboard_data, build_stays, hospital_table, poisson_ratio_interval,
-                              summarize, wilson_interval)
+from outcomes.metrics import (build_dashboard_data, build_stays, hip_vs_knee_odds, hospital_table, odds_ratio,
+                              poisson_ratio_interval, summarize, wilson_interval)
 from outcomes.schema import COLUMNS, match_headers
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -289,3 +289,90 @@ def test_oe_interval_matches_exact_poisson_limits():
     assert low == pytest.approx(0.4795, rel=0.01)
     assert high == pytest.approx(1.839, rel=0.01)
     assert poisson_ratio_interval(3, 0) == (None, None)
+
+
+# ---------- complication detail: rates by type, timing, length of stay ----------
+
+def test_rate_by_type_is_per_surgery(tmp_path):
+    # Four surgeries: one has two infection records (counts once), one has pneumonia.
+    stays, comps = _load_rows(tmp_path, [
+        _comp(dob="01/01/1950"),
+        _comp(dob="01/01/1950", additional_record="Yes"),
+        stay(dob="02/02/1950", had_complication="Yes", complication="Pneumonia", during_index_stay="Yes"),
+        stay(dob="03/03/1950"), stay(dob="04/04/1950"),
+    ])
+    rows = {r["type"]: r for r in summarize(stays, comps)["rate_by_type"]}
+    assert rows["Infection"]["stays"] == 1
+    assert rows["Infection"]["rate"] == pytest.approx(0.25)
+    assert rows["Pneumonia"]["rate"] == pytest.approx(0.25)
+    assert rows["AMI"]["rate"] == pytest.approx(0.0)
+    low, high = rows["Infection"]["ci"]
+    assert low < 0.25 < high
+
+
+def test_timing_splits_during_stay_and_after_discharge(tmp_path):
+    stays, comps = _load_rows(tmp_path, [
+        _comp(dob="01/01/1950"),                                                     # infection during stay
+        stay(dob="02/02/1950", had_complication="Yes", complication="Infection",
+             during_index_stay="No", complication_admit_date="03/20/2020"),          # infection after discharge
+        stay(dob="03/03/1950", had_complication="Yes", complication="Pneumonia",
+             during_index_stay="No", complication_admit_date="03/06/2020"),          # pneumonia after discharge
+    ])
+    t = summarize(stays, comps)["timing_by_type"]
+    timing = {typ: (d, a) for typ, d, a in zip(t["type"], t["during"], t["after"])}
+    assert timing["Infection"] == (1, 1)
+    assert timing["Pneumonia"] == (0, 1)
+    assert timing["AMI"] == (0, 0)
+
+
+def test_length_of_stay_by_complication_status(tmp_path):
+    # No complication: 2 days. During stay: 6 and 4 days (one also has a later readmission) -> 5.
+    # After discharge only: 2 days.
+    stays, comps = _load_rows(tmp_path, [
+        stay(dob="01/01/1950"),
+        _comp(dob="02/02/1950", discharge="03/07/2020"),
+        _comp(dob="03/03/1950", discharge="03/05/2020"),
+        stay(dob="03/03/1950", discharge="03/05/2020", had_complication="Yes", complication="Sepsis",
+             additional_record="Yes", during_index_stay="No", complication_admit_date="03/10/2020"),
+        stay(dob="04/04/1950", had_complication="Yes", complication="Infection",
+             during_index_stay="No", complication_admit_date="03/20/2020"),
+    ])
+    los = summarize(stays, comps)["los_by_status"]
+    result = dict(zip(los["status"], zip(los["stays"], los["avg_los"])))
+    assert result["No complication"] == (1, pytest.approx(2.0))
+    assert result["Complication during stay"] == (2, pytest.approx(5.0))
+    assert result["Complication after discharge only"] == (1, pytest.approx(2.0))
+
+
+# ---------- hip vs knee odds ratios ----------
+
+def test_odds_ratio_and_woolf_interval():
+    # 10/100 hips vs 5/100 knees: OR = (10*95)/(90*5) = 2.111, Woolf 95% CI 0.695 to 6.42
+    ratio, low, high = odds_ratio(10, 90, 5, 95)
+    assert ratio == pytest.approx(2.111, rel=0.001)
+    assert low == pytest.approx(0.6946, rel=0.01)
+    assert high == pytest.approx(6.416, rel=0.01)
+    # A zero cell gets 0.5 added to every cell: (0.5*5.5)/(10.5*5.5) = 0.0476
+    assert odds_ratio(0, 10, 5, 5)[0] == pytest.approx(0.5 / 10.5)
+    assert odds_ratio(0, 0, 5, 5) == (None, None, None)
+
+
+def test_hip_vs_knee_leaves_out_stays_with_both_procedures(tmp_path):
+    # Hips: 2 (one infection). Knees: 2 (none). One stay with both procedures and an infection is left out.
+    # 2x2 = 1, 1, 0, 2 -> zero cell -> (1.5*2.5)/(1.5*0.5) = 5.0
+    stays, comps = _load_rows(tmp_path, [
+        _comp(dob="01/01/1950", tka=0, tha=1), stay(dob="02/02/1950", tka=0, tha=1),
+        stay(dob="03/03/1950"), stay(dob="04/04/1950"),
+        _comp(dob="05/05/1950", tka=1, tha=1),
+    ])
+    rows = {r["type"]: r for r in hip_vs_knee_odds(stays, comps)}
+    anyc = rows["Any complication"]
+    assert (anyc["hip"], anyc["hip_n"], anyc["knee"], anyc["knee_n"]) == (1, 2, 0, 2)
+    assert anyc["odds_ratio"] == pytest.approx(5.0)
+    assert rows["Infection"]["odds_ratio"] == pytest.approx(5.0)
+
+
+def test_synthetic_in_stay_complications_lengthen_the_stay():
+    stays, comps = build_stays(load(ROOT / "data" / "synthetic_discharges.csv"))
+    los = dict(zip(*[summarize(stays, comps)["los_by_status"][k] for k in ("status", "avg_los")]))
+    assert los["Complication during stay"] > los["No complication"] + 1

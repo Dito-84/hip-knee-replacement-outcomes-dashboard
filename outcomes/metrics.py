@@ -140,6 +140,93 @@ def kpis(s, population):
     }
 
 
+def _types_present(c):
+    """Measure complication types first (CMS order), then any others in the data."""
+    others = sorted(set(c["complication"].dropna()) - set(COMPLICATION_TYPES))
+    return COMPLICATION_TYPES + others
+
+
+def rates_by_type(s, c):
+    """Share of surgeries with at least one complication of each type, with 95% CI.
+
+    Per surgery, like every other rate: a stay with two infection records counts once.
+    """
+    n = len(s)
+    stays_with = c.groupby("complication")["stay_key"].nunique()
+    rows = []
+    for t in _types_present(c):
+        k = int(stays_with.get(t, 0))
+        low, high = wilson_interval(k, n)
+        rows.append({"type": t, "stays": k, "rate": _rate(k, n), "ci": [low, high]})
+    return rows
+
+
+def timing_by_type(c):
+    """Complication records by type, split into during the index stay and after discharge."""
+    types = _types_present(c)
+    during = c[c["during_index_stay"]].groupby("complication").size()
+    after = c[~c["during_index_stay"]].groupby("complication").size()
+    return {"type": types,
+            "during": [int(during.get(t, 0)) for t in types],
+            "after": [int(after.get(t, 0)) for t in types]}
+
+
+LOS_STATUS = ["No complication", "Complication during stay", "Complication after discharge only"]
+
+
+def los_by_status(s, c):
+    """Average length of stay for surgeries with no complication, a complication during
+    the index stay, or complications only after discharge."""
+    during_keys = set(c.loc[c["during_index_stay"], "stay_key"])
+    any_keys = set(c["stay_key"])
+    status = np.where(s["stay_key"].isin(during_keys), LOS_STATUS[1],
+                      np.where(s["stay_key"].isin(any_keys), LOS_STATUS[2], LOS_STATUS[0]))
+    grouped = s.groupby(status)["los_days"]
+    means, counts = grouped.mean(), grouped.size()
+    return {"status": LOS_STATUS,
+            "stays": [int(counts.get(k, 0)) for k in LOS_STATUS],
+            "avg_los": [None if k not in means else float(means[k]) for k in LOS_STATUS]}
+
+
+def odds_ratio(a, b, c, d, z=1.96):
+    """Odds ratio for a 2x2 table with a 95% CI (Woolf's log method).
+
+    a, b: exposed with / without the outcome; c, d: unexposed with / without.
+    If any cell is zero, 0.5 is added to every cell (Haldane-Anscombe correction).
+    """
+    if min(a + b, c + d) == 0 or min(a + c, b + d) == 0:
+        return None, None, None
+    if 0 in (a, b, c, d):
+        a, b, c, d = a + 0.5, b + 0.5, c + 0.5, d + 0.5
+    ratio = (a * d) / (b * c)
+    se = np.sqrt(1 / a + 1 / b + 1 / c + 1 / d)
+    return float(ratio), float(np.exp(np.log(ratio) - z * se)), float(np.exp(np.log(ratio) + z * se))
+
+
+def hip_vs_knee_odds(stays, comps, hospital="All", population="all"):
+    """Odds of each complication after a hip (THA) vs a knee (TKA) replacement.
+
+    Unadjusted. Stays with both procedures are left out, since they belong to
+    neither group. Ignores the procedure filter by design.
+    """
+    s = filter_stays(stays, hospital, "All", population)
+    s = s[s["has_tha"] != s["has_tka"]]
+    c = comps[comps["stay_key"].isin(s["stay_key"])]
+    if population == "adjusted":
+        c = c[~c["covid_excluded"]]
+    hip = set(s.loc[s["has_tha"], "stay_key"])
+    n_hip, n_knee = len(hip), len(s) - len(hip)
+    rows = []
+    for t in ["Any complication"] + _types_present(c):
+        keys = set(c["stay_key"]) if t == "Any complication" else set(c.loc[c["complication"] == t, "stay_key"])
+        a = len(keys & hip)
+        k = len(keys) - a
+        ratio, low, high = odds_ratio(a, n_hip - a, k, n_knee - k)
+        rows.append({"type": t, "hip": a, "hip_n": n_hip, "knee": k, "knee_n": n_knee,
+                     "odds_ratio": ratio, "ci": [low, high]})
+    return rows
+
+
 def summarize(stays, comps, hospital="All", procedure="All", population="all"):
     """Everything the dashboard shows for one combination of filters."""
     s = filter_stays(stays, hospital, procedure, population)
@@ -153,6 +240,9 @@ def summarize(stays, comps, hospital="All", procedure="All", population="all"):
     type_counts = c["complication"].value_counts().reindex(COMPLICATION_TYPES, fill_value=0)
     other = c.loc[~c["complication"].isin(COMPLICATION_TYPES), "complication"].value_counts()
     type_counts = pd.concat([type_counts, other]).sort_values(ascending=False)
+    timing = timing_by_type(c)
+    order = [timing["type"].index(t) for t in type_counts.index]
+    timing = {key: [vals[i] for i in order] for key, vals in timing.items()}
 
     los = s["los_days"].clip(upper=5).value_counts().reindex(range(6), fill_value=0)
     readmit_days = s[f"readmit_days_{population}"].dropna()
@@ -166,6 +256,10 @@ def summarize(stays, comps, hospital="All", procedure="All", population="all"):
             "complication_rate": [_rate(c_, n) for c_, n in zip(by_year["complications"], by_year["stays"])],
         },
         "by_type": {"type": type_counts.index.tolist(), "count": type_counts.astype(int).tolist()},
+        "timing_by_type": timing,
+        "rate_by_type": rates_by_type(s, c),
+        "los_by_status": los_by_status(s, c),
+        "hip_vs_knee": hip_vs_knee_odds(stays, comps, hospital, population),
         "los": {"days": LOS_LABELS, "stays": los.astype(int).tolist()},
         "readmit_days": {"bucket": READMIT_LABELS, "stays": readmit_hist.fillna(0).astype(int).tolist()},
         "by_age": {

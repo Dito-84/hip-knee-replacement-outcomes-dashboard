@@ -169,7 +169,7 @@
     </div>
     <div class="card wide">
       <h2>Hospital comparison</h2>
-      <p class="note">Uses the procedure and population filters.</p>
+      <p class="note">Uses the procedure and population filters. The 95% CI is the Wilson interval for each hospital's complication rate.</p>
       <div class="table-scroll"><table id="t-hospital"></table></div>
     </div>
   </section>
@@ -212,6 +212,7 @@ const OPTIONS = {
 const pct = (v, d = 1) => v == null ? "–" : (v * 100).toFixed(d) + "%";
 const num = v => v == null ? "–" : v.toLocaleString("en-US");
 const dec = (v, d = 1) => v == null ? "–" : v.toFixed(d);
+const ciText = ci => !ci || ci[0] == null ? "–" : `${pct(ci[0])} to ${pct(ci[1])}`;
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function banner() {
@@ -443,8 +444,8 @@ function render() {
     v.readmit_days.bucket.map((b, i) => `${b} days: ${num(v.readmit_days.stays[i])} patients`).join("; ") + ".");
 
   document.getElementById("t-hospital").innerHTML =
-    "<thead><tr><th>Hospital</th><th>Surgeries</th><th>Complication</th><th>O/E</th><th>30-day readmit</th><th>Avg stay</th></tr></thead><tbody>" +
-    hospitals.map(h => `<tr><td>${h.hospital}</td><td>${num(h.stays)}</td><td>${pct(h.complication_rate)}</td><td>${dec(h.oe_ratio, 2)}</td>` +
+    "<thead><tr><th>Hospital</th><th>Surgeries</th><th>Complication</th><th>95% CI</th><th>O/E</th><th>30-day readmit</th><th>Avg stay</th></tr></thead><tbody>" +
+    hospitals.map(h => `<tr><td>${h.hospital}</td><td>${num(h.stays)}</td><td>${pct(h.complication_rate)}</td><td>${ciText(h.complication_ci)}</td><td>${dec(h.oe_ratio, 2)}</td>` +
       `<td>${pct(h.readmit30_rate)}</td><td>${dec(h.avg_los, 2)} d</td></tr>`).join("") + "</tbody>";
 }
 

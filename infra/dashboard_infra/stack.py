@@ -15,14 +15,18 @@ from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_budgets as budgets
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
+from aws_cdk import aws_cloudwatch as cloudwatch
+from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_lambda_destinations as destinations
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_notifications as s3n
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subs
+from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
 from .bundling import ARCHITECTURE, RUNTIME, data_check_code
@@ -161,15 +165,40 @@ class DashboardStack(Stack):
                 noncurrent_version_expiration=Duration.days(365), noncurrent_versions_to_retain=5)],
         )
 
+        # A customer managed key, not the AWS managed alias/aws/sns: CloudWatch alarms can't
+        # publish to a topic encrypted with the AWS managed key, whose policy can't be edited.
+        # About $1 a month. Rotated yearly; kept if the stack is deleted, like the buckets.
+        self.alerts_key = kms.Key(
+            self, "AlertsKey",
+            description="Encrypts the data-check alert topic; usable by CloudWatch alarms in this account",
+            enable_key_rotation=True,
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        self.alerts_key.add_to_resource_policy(iam.PolicyStatement(
+            sid="CloudWatchAlarmsCanPublishToTheAlertTopic",
+            principals=[iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+            actions=["kms:Decrypt", "kms:GenerateDataKey"],
+            resources=["*"],   # in a key policy, "*" means this key
+            conditions={"StringEquals": {"aws:SourceAccount": self.account}},
+        ))
         self.alerts = sns.Topic(
             self, "DataCheckAlerts",
             display_name="Dashboard data check",
-            master_key=kms.Alias.from_alias_name(self, "SnsKey", "alias/aws/sns"),
+            master_key=self.alerts_key,
             enforce_ssl=True,
         )
         if alert_email:
             self.alerts.add_subscription(subs.EmailSubscription(alert_email))
             self._add_budget(alert_email, monthly_budget_usd)
+
+        # Upload events the function failed on after its retries: kept 14 days to see what was
+        # missed and re-run it. Holds S3 event records (bucket and file name), never file contents.
+        self.failed_checks = sqs.Queue(
+            self, "FailedChecks",
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            enforce_ssl=True,
+            retention_period=Duration.days(14),
+        )
 
         log_group = logs.LogGroup(
             self, "DataCheckLogs",
@@ -192,6 +221,11 @@ class DashboardStack(Stack):
             timeout=Duration.minutes(2),
             role=fn_role,
             log_group=log_group,
+            # S3 invokes the function asynchronously: Lambda retries a failed upload twice, then
+            # sends the event to the dead-letter queue instead of dropping it
+            retry_attempts=2,
+            max_event_age=Duration.hours(1),
+            on_failure=destinations.SqsDestination(self.failed_checks),
             environment={"TOPIC_ARN": self.alerts.topic_arn, "REPORT_PREFIX": "reports/",
                          "REFERENCE_BUCKET": self.reference_bucket.bucket_name, "REFERENCE_KEY": REFERENCE_KEY},
         )
@@ -213,7 +247,49 @@ class DashboardStack(Stack):
             principals=[iam.ArnPrincipal(fn_role.role_arn)],
             actions=["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectTagging"],
             resources=[self.reference_bucket.arn_for_objects("*")]))
-        self.alerts.grant_publish(self.data_check)
+        # Publish written out (instead of grant_publish) so the key actions carry no wildcard
+        fn_role.add_to_policy(iam.PolicyStatement(
+            sid="PublishAlerts", actions=["sns:Publish"], resources=[self.alerts.topic_arn]))
+        fn_role.add_to_policy(iam.PolicyStatement(
+            sid="EncryptAlerts", actions=["kms:Decrypt", "kms:GenerateDataKey"],
+            resources=[self.alerts_key.key_arn]))
+
+        # ---------- Alarms: say so when the check itself breaks ----------
+        # A crash or timeout sends no report email, so silence would look like "no uploads".
+        # Alarm emails carry only the alarm's name, metric and state, never data.
+        alarm_action = cw_actions.SnsAction(self.alerts)
+        self.error_alarm = cloudwatch.Alarm(
+            self, "DataCheckErrors",
+            alarm_description="The data-check function failed (crash or timeout). Lambda retries twice; "
+                              "see the DataCheckLogs log group.",
+            metric=self.data_check.metric_errors(period=Duration.minutes(5), statistic="Sum"),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        self.lost_alarm = cloudwatch.Alarm(
+            self, "DataCheckGaveUp",
+            alarm_description="An upload failed the data check after every retry and was sent to the "
+                              "FailedChecks queue. It has no report.",
+            metric=self.failed_checks.metric_approximate_number_of_messages_visible(
+                period=Duration.minutes(5), statistic="Maximum"),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        for alarm in (self.error_alarm, self.lost_alarm):
+            alarm.add_alarm_action(alarm_action)
+        # Only this stack's alarms may publish, and only from this account
+        self.alerts.add_to_resource_policy(iam.PolicyStatement(
+            sid="AlarmsCanPublish",
+            principals=[iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+            actions=["sns:Publish"],
+            resources=[self.alerts.topic_arn],
+            conditions={"ArnLike": {"aws:SourceArn": [self.error_alarm.alarm_arn, self.lost_alarm.alarm_arn]},
+                        "StringEquals": {"aws:SourceAccount": self.account}},
+        ))
 
         # Only incoming/ triggers the function, so writing reports/ can't cause a loop
         self.intake_bucket.add_event_notification(
@@ -232,6 +308,8 @@ class DashboardStack(Stack):
                   description="GitHub variable AWS_DEPLOY_ROLE_ARN")
         CfnOutput(self, "IntakeBucketName", value=self.intake_bucket.bucket_name,
                   description="Upload files to s3://<this bucket>/incoming/")
+        CfnOutput(self, "FailedChecksQueueUrl", value=self.failed_checks.queue_url,
+                  description="Uploads the check gave up on (kept 14 days)")
         CfnOutput(self, "ReferenceBucketName", value=self.reference_bucket.bucket_name,
                   description="Drift reference; update only with scripts/publish_reference.py")
 

@@ -42,6 +42,13 @@ def add_suppressions(stack: Stack) -> None:
                    "incoming/, write-only under reports/."),
     ], apply_to_children=True)
 
+    NagSuppressions.add_resource_suppressions(stack.failed_checks, [
+        NagPackSuppression(
+            id="AwsSolutions-SQS3",
+            reason="This queue is the dead-letter queue: the data-check function's on-failure destination. "
+                   "Nothing reads from it automatically, so it needs no dead-letter queue of its own."),
+    ])
+
     # CDK's own helper that attaches the S3 -> Lambda notification at deploy time
     for child in stack.node.children:
         if child.node.id.startswith("BucketNotificationsHandler"):

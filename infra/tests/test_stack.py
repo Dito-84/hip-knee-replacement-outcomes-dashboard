@@ -190,7 +190,10 @@ def test_data_check_role_reads_uploads_and_writes_reports_only(template):  # and
     assert by_sid["WriteReports"]["Action"] == "s3:PutObject"
     assert by_sid["WriteReports"]["Resource"]["Fn::Join"][1][-1] == "/reports/*"
     assert actions(stmts) <= {"s3:GetObject", "s3:PutObject", "sns:Publish",
+                              "kms:Decrypt", "kms:GenerateDataKey",                     # the alert topic's key
+                              "sqs:SendMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl",  # failed events
                               "logs:CreateLogStream", "logs:PutLogEvents"}
+    assert not [a for a in actions(stmts) if "*" in a], "no wildcard actions"
     # No AWS managed policies on the function's role
     role = [r for k, r in template.find_resources("AWS::IAM::Role").items() if k.startswith("DataCheckRole")][0]
     assert "ManagedPolicyArns" not in role["Properties"]
@@ -234,6 +237,56 @@ def test_reference_is_versioned_and_keeps_recent_versions(template):
     assert bucket["LoggingConfiguration"]["LogFilePrefix"] == "s3/reference/"
 
 
+# ---------- Failure alerting ----------
+
+def _logical(template, type_, prefix):
+    [found] = [k for k in template.find_resources(type_) if k.startswith(prefix)]
+    return found
+
+
+def test_failed_uploads_are_retried_then_kept_in_a_queue(template):
+    queue = _logical(template, "AWS::SQS::Queue", "FailedChecks")
+    template.has_resource_properties("AWS::Lambda::EventInvokeConfig", {
+        "MaximumRetryAttempts": 2,
+        "MaximumEventAgeInSeconds": 3600,
+        "DestinationConfig": {"OnFailure": {"Destination": {"Fn::GetAtt": [queue, "Arn"]}}},
+    })
+    props = template.find_resources("AWS::SQS::Queue")[queue]["Properties"]
+    assert props["SqsManagedSseEnabled"] is True
+    assert props["MessageRetentionPeriod"] == 14 * 24 * 3600
+
+
+def test_alarms_email_on_errors_and_on_given_up_uploads(template):
+    topic = _logical(template, "AWS::SNS::Topic", "DataCheckAlerts")
+    alarms = template.find_resources("AWS::CloudWatch::Alarm")
+    assert len(alarms) == 2
+    by_metric = {a["Properties"]["MetricName"]: a["Properties"] for a in alarms.values()}
+    assert set(by_metric) == {"Errors", "ApproximateNumberOfMessagesVisible"}
+    for props in by_metric.values():
+        assert props["AlarmActions"] == [{"Ref": topic}]
+        assert props["Threshold"] == 1 and props["TreatMissingData"] == "notBreaching"
+
+
+def test_alert_topic_uses_a_key_cloudwatch_can_use(template):
+    """CloudWatch alarms can't publish to a topic encrypted with the AWS managed alias/aws/sns key."""
+    key = _logical(template, "AWS::KMS::Key", "AlertsKey")
+    template.has_resource_properties("AWS::SNS::Topic", {"KmsMasterKeyId": {"Fn::GetAtt": [key, "Arn"]}})
+    props = template.find_resources("AWS::KMS::Key")[key]["Properties"]
+    assert props["EnableKeyRotation"] is True
+    [stmt] = [s for s in props["KeyPolicy"]["Statement"] if s.get("Sid") == "CloudWatchAlarmsCanPublishToTheAlertTopic"]
+    assert stmt["Principal"] == {"Service": "cloudwatch.amazonaws.com"}
+    assert set(stmt["Action"]) == {"kms:Decrypt", "kms:GenerateDataKey"}
+    assert "aws:SourceAccount" in stmt["Condition"]["StringEquals"]
+
+
+def test_only_this_stacks_alarms_can_publish_to_the_topic(template):
+    [policy] = template.find_resources("AWS::SNS::TopicPolicy").values()
+    [stmt] = [s for s in policy["Properties"]["PolicyDocument"]["Statement"] if s.get("Sid") == "AlarmsCanPublish"]
+    assert stmt["Action"] == "sns:Publish"
+    arns = stmt["Condition"]["ArnLike"]["aws:SourceArn"]
+    assert len(arns) == 2 and all("DataCheck" in str(a) for a in arns)
+
+
 def test_uploads_and_reports_expire(template):
     template.has_resource_properties("AWS::S3::Bucket", {"LifecycleConfiguration": {"Rules": [
         Match.object_like({"Prefix": "incoming/", "ExpirationInDays": 7, "Status": "Enabled"}),
@@ -265,5 +318,5 @@ def test_budget_alert_comes_with_an_email():
 def test_outputs_give_github_what_it_needs(template):
     outputs = template.to_json()["Outputs"]
     for name in ("SiteUrl", "SiteBucketName", "DistributionId", "DeployRoleArn", "IntakeBucketName",
-                 "ReferenceBucketName"):
+                 "ReferenceBucketName", "FailedChecksQueueUrl"):
         assert name in outputs

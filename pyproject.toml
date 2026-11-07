@@ -54,4 +54,5 @@ select = ["E", "F", "W", "I", "B", "UP", "C4"]
 ignore = ["B905"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["outcomes", "dashboard_infra", "handler", "helpers", "build", "check_data", "check_cdn_integrity"]
+known-first-party = ["outcomes", "dashboard_infra", "handler", "drift", "drift_policy", "helpers", "build",
+                     "check_data", "check_cdn_integrity", "publish_reference"]

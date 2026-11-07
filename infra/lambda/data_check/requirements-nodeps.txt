@@ -1,0 +1,5 @@
+# Installed with --no-deps: its dependencies (pandas, NumPy, SciPy) are pinned in requirements.txt,
+# and matplotlib, which it needs only for plots, is left out so the package stays under Lambda's 250 MB.
+# 0.15.1 is the first version that doesn't load matplotlib on import. Pure Python, so it is
+# built here rather than downloaded as a Linux ARM64 wheel.
+dstoolkit @ git+https://github.com/Dito-84/dstoolkit@8667b5750f4990dbf9e9264cab4fd843fb026184

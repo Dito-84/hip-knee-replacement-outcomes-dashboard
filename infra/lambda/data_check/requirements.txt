@@ -1,6 +1,8 @@
 # Bundled into the Lambda package for Linux ARM64, Python 3.14 (boto3 is already in the Lambda runtime)
 pandas==3.1.0
 numpy==2.5.4
+# dstoolkit's compare() uses SciPy for the KS and chi-square tests in the drift check
+scipy==1.18.1
 openpyxl==3.1.5
 # The Lambda runtime's boto3/botocore needs python-dateutil < 3; this package folder comes first on the path
 python-dateutil>=2.8.2,<3

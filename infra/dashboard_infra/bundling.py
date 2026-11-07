@@ -1,10 +1,16 @@
-"""Package the data-check Lambda: handler + the repo's outcomes/ package + pandas.
+"""Package the data-check Lambda: handler + the repo's outcomes/ package + pandas, SciPy, dstoolkit.
 
-pandas and numpy are compiled libraries, so the wheels must match Lambda
+pandas, NumPy and SciPy are compiled libraries, so the wheels must match Lambda
 (Linux, ARM64, Python 3.14), not the computer running `cdk deploy`. pip can
 download wheels for another platform, so this works on a Mac without Docker.
 Bundling always runs locally; there is no Docker fallback, so a pip failure
 stops the deploy with pip's own error message.
+
+dstoolkit (for the drift check) is pure Python and comes from a pinned git
+commit, so it's installed separately with --no-deps: its compiled dependencies
+come from the step above, and matplotlib, which it only needs for plots, isn't
+included. Lambda's 250 MB limit (unzipped, layers included) has room for
+pandas, NumPy and SciPy, but not matplotlib as well.
 """
 
 import hashlib
@@ -27,7 +33,7 @@ PYTHON_VERSION = "3.14"
 PLATFORMS = ["manylinux_2_28_aarch64", "manylinux_2_17_aarch64", "manylinux2014_aarch64"]
 
 # Test suites and caches that ship inside the wheels but are never used at runtime
-STRIP = ["pandas/tests", "numpy/*/tests", "numpy/tests", "**/__pycache__"]
+STRIP = ["pandas/tests", "numpy/*/tests", "numpy/tests", "scipy/*/tests", "scipy/*/*/tests", "**/__pycache__"]
 
 
 def _source_files():
@@ -58,10 +64,17 @@ def assemble(output_dir: Path, *, python_version: str = PYTHON_VERSION, platform
          "-r", str(HANDLER_DIR / "requirements.txt")],
         check=True,
     )
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--quiet", "--no-compile", "--disable-pip-version-check",
+         "--no-warn-conflicts", "--target", str(output_dir), "--no-deps",
+         "-r", str(HANDLER_DIR / "requirements-nodeps.txt")],
+        check=True,
+    )
     for pattern in STRIP:
         for path in output_dir.glob(pattern):
             shutil.rmtree(path, ignore_errors=True)
-    shutil.copy2(HANDLER_DIR / "handler.py", output_dir / "handler.py")
+    for module in HANDLER_DIR.glob("*.py"):    # handler.py, drift.py, drift_policy.py
+        shutil.copy2(module, output_dir / module.name)
     shutil.copytree(OUTCOMES_DIR, output_dir / "outcomes", ignore=shutil.ignore_patterns("__pycache__"),
                     dirs_exist_ok=True)
 

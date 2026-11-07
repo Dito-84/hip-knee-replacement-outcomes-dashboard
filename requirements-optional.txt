@@ -1,4 +1,6 @@
 # Optional: the full data profile in scripts/check_data.py.
 # Pinned to a tested version of dstoolkit so later changes to it can't affect this project.
 # The dashboard itself, its tests and the public site never need it.
-dstoolkit @ git+https://github.com/Dito-84/dstoolkit@378d9d38282666cc9937e1a21cb3b58c34e781f5
+# 0.15.1: the same version as the data-check Lambda's drift check (infra/lambda/data_check/requirements-nodeps.txt),
+# so the repo uses one dstoolkit. Was 0.4.1; profile() since then also flags messy column names and notes rows.
+dstoolkit @ git+https://github.com/Dito-84/dstoolkit@8667b5750f4990dbf9e9264cab4fd843fb026184

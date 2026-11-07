@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from helpers import make_records, stay
-from outcomes.load import DataFormatError, load
+from outcomes.load import DataFormatError, load, load_raw
 from outcomes.schema import match_headers
 
 
@@ -44,3 +44,18 @@ def test_unrecognized_file_raises(tmp_path):
     pd.DataFrame({"a": [1]}).to_csv(path, index=False)
     with pytest.raises(DataFormatError):
         load(path)
+
+
+def test_load_raw_keeps_the_file_as_delivered(tmp_path):
+    """For the drift check: no type conversion, unknown columns kept, blanks missing."""
+    records = make_records([stay(), stay(dob="05/05/1951", tka=0, tha=1)])
+    records["Notes  column "] = ["x", ""]                       # a column the dashboard doesn't know
+    records.iloc[1, records.columns.get_loc("Number of TKAs Performed (0, 1, or 2)")] = "one"
+    path = tmp_path / "raw.csv"
+    records.to_csv(path, index=False)
+
+    raw = load_raw(path)
+    assert "Notes column" in raw.columns                        # header kept, extra spaces removed
+    assert raw["n_tka"].tolist() == ["1", "one"]               # load() would have turned "one" into 0
+    assert raw["Notes column"].isna().tolist() == [False, True]
+    assert len(raw) == len(load(path)) == 2

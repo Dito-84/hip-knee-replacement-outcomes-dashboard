@@ -26,6 +26,10 @@ flowchart LR
     fn -- "report JSON to reports/" --> intake
     fn -- "summary (counts only)" --> sns[SNS topic] --> email([Email])
     ref[(S3 reference bucket<br/>private, versioned)] -- "read one object<br/>(no write access)" --> fn
+    fn -. "failed after 2 retries" .-> dlq[(SQS dead-letter queue<br/>14 days)]
+    fn -. "Errors metric" .-> alarm[CloudWatch alarms]
+    dlq -. "queue depth" .-> alarm
+    alarm -- "alarm state (no data)" --> sns
     you([You, deliberately]) -- "scripts/publish_reference.py" --> ref
 
     site -. access logs .-> logs[(S3 log bucket<br/>90-day expiry)]
@@ -68,6 +72,8 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
   - The Lambda can read `incoming/`, write `reports/`, read the single reference object, publish to its topic and write its own logs. It uses no AWS managed policies.
 - **Automated security review:** [cdk-nag](https://github.com/cdklabs/cdk-nag) runs the AWS Solutions rule pack on every synth and in CI. The few rules that don't apply are documented with reasons in [`nag.py`](dashboard_infra/nag.py). Any other finding fails the build.
 - The data check's reports and emails contain only counts, column names and check names, never values from the file. Tests check this, including for a drifted file with relabelled and new values.
+- The alert topic is encrypted with a **customer managed KMS key**, rotated yearly. The AWS managed `alias/aws/sns` key can't be used here, because CloudWatch alarms can't publish to a topic encrypted with it and its policy can't be edited. The key policy lets CloudWatch use the key only for this account, and the topic policy accepts alarm messages only from this stack's two alarms.
+- Failure alerts come from CloudWatch alarms, not from Lambda's failure records. Those records include the error message and could hold a value from the file; an alarm email says only which alarm fired.
 - **The page itself** carries a Content-Security-Policy (built into the HTML, so the GitHub Pages copy has it too). It allows only the page's own script, by hash, and the chart library from jsDelivr, pinned by a subresource-integrity hash that CI checks against the CDN. A tampered library or an injected script won't run.
 
 **Reliable**
@@ -75,6 +81,7 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
 - Site versions are kept for 30 days, so a bad deploy can be rolled back.
 - Buckets are kept if the stack is deleted, so data is never removed by accident.
 - The drift reference is versioned and can only be replaced deliberately, so a bad upload can't change what "normal" means. If it's missing or the comparison fails, only the drift section is skipped.
+- **A broken check is never silent.** S3 invokes the function asynchronously, so a crash or timeout sends no report email, and Lambda would drop the event after its retries. Instead, Lambda retries twice and then sends the event to an SQS **dead-letter queue**, kept 14 days. The queue holds the S3 event (bucket and file name), not the file. Two alarms email the alert topic: one on any function error (it may still succeed on retry), one when an event reaches the queue (it won't).
 
 **Fast**
 - CloudFront serves the site from edge locations, with compression and HTTP/3.
@@ -86,9 +93,10 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
 - ARM64 Lambda costs about 20% less than x86 for the same work.
 - AWS WAF was left out on purpose: the site is static, with nothing to log in to or submit, and WAF would cost more than everything else combined.
 - An optional **AWS Budget** emails you before monthly spend passes $5.
+- The customer managed key for the alert topic costs about $1 a month; the two alarms and the queue fit in the free tier (10 alarms, 1 million SQS requests).
 - The drift check adds a few seconds per upload at 1 GB on ARM64 (about 1.5 s on a laptop, including loading SciPy; roughly $0.00005 per upload) and a 0.4 MB reference file in S3. The 2-minute timeout and 1 GB memory are unchanged. Both are a fraction of a cent a month, well inside the budget.
 
-At portfolio traffic, everything here should stay within AWS's free tier: CloudFront's 1 TB a month, Lambda's 1 million requests, the first 1,000 SNS emails and the first two budgets. S3 storage of a few megabytes costs a fraction of a cent.
+At portfolio traffic, almost everything here stays within AWS's free tier: CloudFront's 1 TB a month, Lambda's 1 million requests, the first 1,000 SNS emails, 10 alarms, 1 million SQS requests and the first two budgets. S3 storage of a few megabytes costs a fraction of a cent. The one fixed cost is the alert topic's KMS key, about $1 a month.
 
 ## What would change for real patient data
 
@@ -144,7 +152,12 @@ You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and
    ```bash
    python ../scripts/publish_reference.py --bucket <ReferenceBucketName> --dry-run   # check, then run without --dry-run
    ```
-7. **Try the data check:**
+7. **Check the failure alerts** (optional). This sets an alarm to ALARM by hand, which should email you within a minute, and CloudWatch sets it back on its next evaluation:
+   ```bash
+   aws cloudwatch describe-alarms --alarm-name-prefix HipKneeDashboard --query "MetricAlarms[].AlarmName"
+   aws cloudwatch set-alarm-state --alarm-name <DataCheckErrors alarm name> --state-value ALARM --state-reason "Testing the alert email"
+   ```
+8. **Try the data check:**
    ```bash
    aws s3 cp ../data/synthetic_discharges.csv s3://<IntakeBucketName>/incoming/
    # a few seconds later you'll get an email; the full report is here:
@@ -187,7 +200,7 @@ CI runs all three on every pull request. None of them needs an AWS account.
 | Path | Purpose |
 |---|---|
 | `app.py`, `cdk.json` | CDK app and its settings (repository, branch, region) |
-| `dashboard_infra/stack.py` | Buckets (including the drift reference), CloudFront, OIDC deploy role, Lambda, SNS, budget |
+| `dashboard_infra/stack.py` | Buckets (including the drift reference), CloudFront, OIDC deploy role, Lambda with its dead-letter queue and alarms, SNS with its key, budget |
 | `dashboard_infra/bundling.py` | Builds the Lambda package: pip downloads pandas, NumPy and SciPy for Linux ARM64, so no Docker is needed; dstoolkit is added without matplotlib |
 | `dashboard_infra/nag.py` | The documented exceptions to the cdk-nag security rules |
 | `lambda/data_check/handler.py` | The data-check function; it reuses the dashboard's `outcomes` package |

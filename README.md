@@ -141,7 +141,7 @@ With [dstoolkit](https://github.com/Dito-84/dstoolkit) installed (`pip install -
 
 [`infra/`](infra/README.md) defines the [AWS version of this site](https://d12lu6oeqxy46k.cloudfront.net) in AWS CDK (Python):
 - A private S3 bucket served through CloudFront, deployed from GitHub Actions through OIDC, so no AWS keys are stored in GitHub.
-- An S3-triggered Lambda that runs the data-quality checks on an uploaded file and emails a summary.
+- An S3-triggered Lambda that runs the data-quality checks on an uploaded file, checks it for drift against a read-only reference snapshot (type changes, distribution shift, more blanks, new codes, added or removed columns), and emails a counts-only summary.
 
 It includes least-privilege IAM, automated cdk-nag security checks in CI, and a budget alert. Its README explains the design choices and what would change for real patient data.
 

@@ -62,7 +62,7 @@ def test_no_unexplained_security_findings(stack):
 
 def test_every_bucket_blocks_public_access_and_encrypts(template):
     buckets = template.find_resources("AWS::S3::Bucket")
-    assert len(buckets) == 3
+    assert len(buckets) == 4   # logs, site, intake, reference
     for bucket in buckets.values():
         props = bucket["Properties"]
         assert props["PublicAccessBlockConfiguration"] == {
@@ -74,7 +74,7 @@ def test_every_bucket_blocks_public_access_and_encrypts(template):
 
 def test_every_bucket_rejects_plain_http(template):
     policies = template.find_resources("AWS::S3::BucketPolicy")
-    assert len(policies) == 3
+    assert len(policies) == 4
     for policy in policies.values():
         denies = [s for s in policy["Properties"]["PolicyDocument"]["Statement"] if s["Effect"] == "Deny"]
         assert any(s["Condition"] == {"Bool": {"aws:SecureTransport": "false"}} for s in denies)
@@ -168,7 +168,9 @@ def test_data_check_function_settings(template):
         "Architectures": ["arm64"],
         "MemorySize": 1024,
         "Timeout": 120,
-        "Environment": {"Variables": {"TOPIC_ARN": Match.any_value(), "REPORT_PREFIX": "reports/"}},
+        "Environment": {"Variables": {"TOPIC_ARN": Match.any_value(), "REPORT_PREFIX": "reports/",
+                                      "REFERENCE_BUCKET": Match.any_value(),
+                                      "REFERENCE_KEY": "reference/discharges.csv"}},
     })
 
 
@@ -180,7 +182,7 @@ def test_only_uploads_trigger_the_check(template):
         })]}})
 
 
-def test_data_check_role_reads_uploads_and_writes_reports_only(template):
+def test_data_check_role_reads_uploads_and_writes_reports_only(template):  # and reads the reference
     stmts = statements(template, "DataCheckRole")
     by_sid = {s.get("Sid"): s for s in stmts}
     assert by_sid["ReadUploads"]["Action"] == "s3:GetObject"
@@ -192,6 +194,44 @@ def test_data_check_role_reads_uploads_and_writes_reports_only(template):
     # No AWS managed policies on the function's role
     role = [r for k, r in template.find_resources("AWS::IAM::Role").items() if k.startswith("DataCheckRole")][0]
     assert "ManagedPolicyArns" not in role["Properties"]
+
+
+def _reference_bucket_id(template):
+    [bucket_id] = [k for k in template.find_resources("AWS::S3::Bucket") if k.startswith("ReferenceBucket")]
+    return bucket_id
+
+
+def _mentions(value, logical_id):
+    return logical_id in str(value)
+
+
+def test_function_can_only_read_one_reference_object(template):
+    """Read access to exactly reference/discharges.csv: no wildcard, no write, no delete."""
+    ref = _reference_bucket_id(template)
+    on_reference = [s for s in statements(template, "DataCheckRole") if _mentions(s["Resource"], ref)]
+    assert len(on_reference) == 1
+    [stmt] = on_reference
+    assert stmt["Sid"] == "ReadReference" and stmt["Action"] == "s3:GetObject"
+    assert stmt["Resource"]["Fn::Join"][1][-1] == "/reference/discharges.csv"
+    assert "*" not in str(stmt["Resource"])
+
+
+def test_reference_bucket_refuses_writes_from_the_function(template):
+    ref = _reference_bucket_id(template)
+    [policy] = [p for p in template.find_resources("AWS::S3::BucketPolicy").values()
+                if p["Properties"]["Bucket"] == {"Ref": ref}]
+    [deny] = [s for s in policy["Properties"]["PolicyDocument"]["Statement"]
+              if s.get("Sid") == "DataCheckCannotChangeReference"]
+    assert deny["Effect"] == "Deny" and _mentions(deny["Principal"], "DataCheckRole")
+    assert {"s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"} <= set(deny["Action"])
+
+
+def test_reference_is_versioned_and_keeps_recent_versions(template):
+    bucket = template.find_resources("AWS::S3::Bucket")[_reference_bucket_id(template)]["Properties"]
+    assert bucket["VersioningConfiguration"] == {"Status": "Enabled"}
+    [rule] = bucket["LifecycleConfiguration"]["Rules"]
+    assert rule["NoncurrentVersionExpiration"] == {"NewerNoncurrentVersions": 5, "NoncurrentDays": 365}
+    assert bucket["LoggingConfiguration"]["LogFilePrefix"] == "s3/reference/"
 
 
 def test_uploads_and_reports_expire(template):
@@ -224,5 +264,6 @@ def test_budget_alert_comes_with_an_email():
 
 def test_outputs_give_github_what_it_needs(template):
     outputs = template.to_json()["Outputs"]
-    for name in ("SiteUrl", "SiteBucketName", "DistributionId", "DeployRoleArn", "IntakeBucketName"):
+    for name in ("SiteUrl", "SiteBucketName", "DistributionId", "DeployRoleArn", "IntakeBucketName",
+                 "ReferenceBucketName"):
         assert name in outputs

@@ -46,6 +46,10 @@ def github_subjects(repo: str, branch: str, owner_id: str | None, repo_id: str |
     return subjects
 
 
+# The one object the data-check function compares uploads with
+REFERENCE_KEY = "reference/discharges.csv"
+
+
 def _private_bucket(scope: Construct, id: str, **kwargs) -> s3.Bucket:
     """S3 bucket with every public-access block on, encryption at rest and TLS-only access."""
     return s3.Bucket(
@@ -145,6 +149,18 @@ class DashboardStack(Stack):
             ],
         )
 
+        # The snapshot new uploads are compared with for drift. Its own bucket, so the
+        # function's write access to the intake bucket can never reach it. Versioned:
+        # each deliberate update (scripts/publish_reference.py) keeps the one before.
+        self.reference_bucket = _private_bucket(
+            self, "ReferenceBucket",
+            versioned=True,
+            server_access_logs_bucket=self.log_bucket,
+            server_access_logs_prefix="s3/reference/",
+            lifecycle_rules=[s3.LifecycleRule(
+                noncurrent_version_expiration=Duration.days(365), noncurrent_versions_to_retain=5)],
+        )
+
         self.alerts = sns.Topic(
             self, "DataCheckAlerts",
             display_name="Dashboard data check",
@@ -176,15 +192,27 @@ class DashboardStack(Stack):
             timeout=Duration.minutes(2),
             role=fn_role,
             log_group=log_group,
-            environment={"TOPIC_ARN": self.alerts.topic_arn, "REPORT_PREFIX": "reports/"},
+            environment={"TOPIC_ARN": self.alerts.topic_arn, "REPORT_PREFIX": "reports/",
+                         "REFERENCE_BUCKET": self.reference_bucket.bucket_name, "REFERENCE_KEY": REFERENCE_KEY},
         )
-        # Read uploads, write reports, publish results; nothing else
+        # Read uploads, write reports, read the reference, publish results; nothing else
         fn_role.add_to_policy(iam.PolicyStatement(
             sid="ReadUploads", actions=["s3:GetObject"],
             resources=[self.intake_bucket.arn_for_objects("incoming/*")]))
         fn_role.add_to_policy(iam.PolicyStatement(
             sid="WriteReports", actions=["s3:PutObject"],
             resources=[self.intake_bucket.arn_for_objects("reports/*")]))
+        # Exactly one object, read-only: no wildcard, and no write or delete on this bucket
+        fn_role.add_to_policy(iam.PolicyStatement(
+            sid="ReadReference", actions=["s3:GetObject"],
+            resources=[self.reference_bucket.arn_for_objects(REFERENCE_KEY)]))
+        # Belt and braces: even if a write permission were added to the role by mistake,
+        # the bucket itself refuses writes and deletes from the function
+        self.reference_bucket.add_to_resource_policy(iam.PolicyStatement(
+            sid="DataCheckCannotChangeReference", effect=iam.Effect.DENY,
+            principals=[iam.ArnPrincipal(fn_role.role_arn)],
+            actions=["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectTagging"],
+            resources=[self.reference_bucket.arn_for_objects("*")]))
         self.alerts.grant_publish(self.data_check)
 
         # Only incoming/ triggers the function, so writing reports/ can't cause a loop
@@ -204,6 +232,8 @@ class DashboardStack(Stack):
                   description="GitHub variable AWS_DEPLOY_ROLE_ARN")
         CfnOutput(self, "IntakeBucketName", value=self.intake_bucket.bucket_name,
                   description="Upload files to s3://<this bucket>/incoming/")
+        CfnOutput(self, "ReferenceBucketName", value=self.reference_bucket.bucket_name,
+                  description="Drift reference; update only with scripts/publish_reference.py")
 
     def _add_budget(self, email: str, limit_usd: int) -> None:
         """Email when the account's monthly spend is forecast to pass the limit, or actually reaches 80% of it."""

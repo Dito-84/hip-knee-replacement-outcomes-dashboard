@@ -40,8 +40,13 @@ def _yes_no(series):
     return text.isin(["yes", "y", "true", "1"])
 
 
-def load(path, sheet=None):
-    """Load and clean a discharge file. Returns one row per complication record."""
+def _table(path, sheet=None):
+    """The first sheet with the expected headers, as text, with every column it has.
+
+    Known columns get their internal names; any others keep their header, stripped.
+    Blank cells become missing and fully blank rows (common at the bottom of Excel
+    exports) are dropped.
+    """
     sheets = _read_raw(path, sheet)
     if isinstance(sheets, pd.DataFrame):
         sheets = {sheet: sheets}
@@ -53,16 +58,30 @@ def load(path, sheet=None):
         headers = raw.iloc[header_row].astype(str).tolist()
         mapping, _ = match_headers(headers)
         df = raw.iloc[header_row + 1:].copy()
-        df.columns = headers
-        df = df[[h for h in headers if h in mapping]].rename(columns=mapping)
-        break
-    else:
-        _, missing = match_headers([])
-        expected = ", ".join(COLUMNS[m][0] for m in missing)
-        raise DataFormatError(f"No sheet in {path} has the expected headers: {expected}")
+        df.columns = [mapping.get(h, " ".join(h.split())) for h in headers]
+        df = df.loc[:, [c != "" and c.lower() not in ("nan", "none") for c in df.columns]]
+        df = df.loc[:, ~df.columns.duplicated()]
+        return df.replace(r"^\s*$", pd.NA, regex=True).dropna(how="all")
 
-    # Drop fully blank rows (common at the bottom of Excel exports)
-    df = df.replace(r"^\s*$", pd.NA, regex=True).dropna(how="all")
+    _, missing = match_headers([])
+    expected = ", ".join(COLUMNS[m][0] for m in missing)
+    raise DataFormatError(f"No sheet in {path} has the expected headers: {expected}")
+
+
+def load_raw(path, sheet=None):
+    """The file's rows before any cleaning: every column, values as text, blanks missing.
+
+    For checks that need to see the file as delivered (the drift check), since
+    load() converts types, fills absent columns and drops unknown ones.
+    """
+    df = _table(path, sheet).astype("string")
+    return df.apply(lambda col: col.str.strip()).reset_index(drop=True)
+
+
+def load(path, sheet=None):
+    """Load and clean a discharge file. Returns one row per complication record."""
+    df = _table(path, sheet)
+    df = df[[c for c in df.columns if c in COLUMNS]]
 
     for col in COLUMNS:
         if col not in df:

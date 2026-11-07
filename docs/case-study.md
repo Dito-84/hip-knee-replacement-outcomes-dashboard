@@ -87,7 +87,7 @@ Although the public version is synthetic, the code is built to be run on a real 
 - **The build refuses to publish real data.** A build of any file other than the synthetic one can only be written to a git-ignored `private/` folder, and CI rejects any committed spreadsheet.
 - **The build stops on bad data.** Every build runs the quality checks first (discharges before admissions, readmissions dated before discharge, implausible ages, unflagged duplicate rows) and stops if one would make the measures wrong.
 - **Small counts can be hidden.** `--suppress-under 11` applies the CMS rule against publishing counts of 1 to 10, along with anything computed from them.
-- **The AWS data check reports counts only.** The S3-triggered Lambda emails which checks failed and how many rows, never values from the file. A test checks this.
+- **The AWS data check reports counts only.** The S3-triggered Lambda emails which checks failed, how many rows, and which columns drifted and by how much, never values from the file. Tests check this, including for a file with relabelled and new values.
 
 ## The synthetic data
 
@@ -117,3 +117,53 @@ A slower test runs the whole pipeline on 30 generated datasets and checks each h
 ## Comparing hospitals with a funnel plot
 
 The hospital chart is a **funnel plot**: each hospital's rate against its number of surgeries, with control limits around the rate for all hospitals combined. It's the standard way to compare providers in healthcare quality work. The limits are exact binomial limits rather than the usual normal approximation, which is poor at a 3% rate. At about 660 surgeries, Hospital A's size, the 95% limits run from about 1.9% to 4.5%. A's observed 3.5% sits well inside, which is the sample-size finding above made visible.
+
+## Architecture decisions on AWS
+
+The AWS side started as a static site and a Lambda that checks uploaded files. Adding a drift check, and then alerts for when the check itself fails, forced a series of trade-offs. Each one had numbers behind it.
+
+### Packaging: a zip, after fixing the library instead of the platform
+
+The drift check uses `compare()` from my own library, [dstoolkit](https://github.com/Dito-84/dstoolkit), which needs SciPy for its significance tests. Lambda allows 250 MB unzipped, **counting the function and all its layers together**, so a layer doesn't add space. I measured the package for Lambda's platform (Linux, ARM64):
+
+| Package | Unzipped |
+|---|---|
+| Before (pandas, NumPy) | 81 MB |
+| + SciPy | 182 MB |
+| + matplotlib, which `import dstoolkit` loaded for plotting | 259 MB |
+
+A container image (up to 10 GB) would have fit. But it would have added Docker to every deploy, and on my Intel Mac it would have built an ARM64 image under emulation. The real problem was that a library loaded a plotting package it didn't need. So I fixed that in dstoolkit 0.15.1: plotting now imports matplotlib only when it draws, and a test keeps it that way. The Lambda installs dstoolkit without matplotlib, at 183 MB. That leaves less room than an image, so the next step is written down: if the function ever needs something large, such as scikit-learn to score a model, build a container image in CI on an ARM64 runner.
+
+### Alerting on drift: big *and* unlikely to be chance
+
+`compare()` rates each column's change by the population stability index (PSI): 0.25 or more is "major". My first rule was "alert on any major change". Testing it on fresh synthetic batches with no real drift showed it would email on most uploads. Columns that are more than 96% blank, such as complication type and death date, hold only a few dozen to a hundred or so values, and their PSI crosses 0.25 by chance.
+
+So a shift or new codes alert only when they're major **and** the adjusted p-value is under 0.01. Removed columns, type changes and blanks moving 10 points or more always alert, because they're exact facts about the file with no sampling noise. Across 120 stable batches of 100 to 4,000 surgeries, the rule raised no alerts. It still catches each kind of drift in the tests: counts sent as "Yes"/"No", a hospital relabelled, a new code, and a column suddenly 20% blank. The rule lives in one small file, so changing it is a one-line review.
+
+The comparison reads each file as delivered, before the dashboard's cleaning. Cleaning converts a count of "Yes" to 0, which would hide exactly the kind of change the check is for.
+
+### The reference can't be overwritten by what it judges
+
+New uploads are compared with a reference copy of the synthetic dataset. If an upload could replace the reference, one bad file would redefine "normal". The reference therefore has its own versioned bucket, protected two ways:
+- **The function's role** can read exactly one object there, with no wildcard.
+- **The bucket's policy** refuses writes and deletes from the function, so a permission added later by mistake still couldn't change it.
+
+The reference changes only when I run a script that publishes the committed file, and only if it matches git exactly. Each report names the reference version it was compared with.
+
+### A broken check is never silent
+
+S3 calls the Lambda asynchronously. If the function crashes, no report email goes out, and after Lambda's retries the event is dropped, so a broken check looks exactly like a quiet week. Now, after two retries, the event goes to a dead-letter queue (kept 14 days), and two CloudWatch alarms email me: one on any error, one when an upload gives up.
+
+Lambda can also send its failure records straight to email. I didn't use that: the records include the error message, which could quote a value from the file, and the alerts are meant to carry counts only. An alarm email says only which alarm fired.
+
+### A gotcha: the default encryption key blocks alarms
+
+The alert topic was encrypted with AWS's managed key for SNS. CloudWatch alarms **can't** publish to a topic encrypted with that key, and its policy can't be edited, so the alarms would have fired without sending anything. I found this in AWS's documentation before deploying, rather than after a missed alert. The topic now uses a customer managed key (rotated yearly, about $1 a month), which CloudWatch may use only for this account. The topic accepts alarm messages only from these two alarms. The alternative was a separate unencrypted topic for alarms. It was free, but it would have weakened an otherwise consistent rule: everything is encrypted at rest. After deploying, I tested it by forcing an alarm and confirming the email arrived.
+
+### Pinning a dependency by commit, not tag
+
+The Lambda pins dstoolkit to a commit, not to its `v0.15.1` tag. A tag can be deleted and recreated pointing at different code, and the next deploy would ship it without anyone noticing. A commit can't change. A comment beside each pin names the version, so the pin stays readable.
+
+### What it costs
+
+The drift check adds a few seconds per upload, about $0.00005, at the same 1 GB of memory. The fixed cost is the alert topic's key, about $1 a month. The alarms, the queue and the reference copy fit in AWS's free tier or cost a fraction of a cent, all well within the $5 budget alert.

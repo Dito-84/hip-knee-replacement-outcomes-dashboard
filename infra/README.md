@@ -51,7 +51,7 @@ Each upload is compared, column by column, with a reference snapshot: the commit
 | Moderate changes, added columns, and major shifts that could be chance (p ≥ 0.01) | Logged in the report and CloudWatch, no alert |
 | Shift or new values in `readmit_provider_id` | Logged: provider IDs are expected to be new each time |
 
-The p-value condition is there because "any major status alerts" would email on most uploads. Columns that are 97–99% blank hold a few dozen values, and in batches with no real drift their PSI regularly crosses 0.25 by chance. With the condition, 120 fresh synthetic batches of 100 to 4,000 stays raised no alert, while each kind of real drift in the tests does.
+The p-value condition is there because "any major status alerts" would email on most uploads. Columns that are more than 96% blank hold a few dozen to a hundred or so values, and in batches with no real drift their PSI regularly crosses 0.25 by chance. With the condition, 120 fresh synthetic batches of 100 to 4,000 stays raised no alert, while each kind of real drift in the tests does.
 
 **Counts only.** `compare()`'s `issues` text and `new_categories` list contain example values (a new hospital name, for instance), so [`drift.py`](lambda/data_check/drift.py) drops them before anything is written. Reports, logs and emails carry column names, statuses and numbers: PSI, adjusted p-value, blank shares and the number of new values.
 

@@ -3,4 +3,4 @@
 # The dashboard itself, its tests and the public site never need it.
 # 0.15.1: the same version as the data-check Lambda's drift check (infra/lambda/data_check/requirements-nodeps.txt),
 # so the repo uses one dstoolkit. Was 0.4.1; profile() since then also flags messy column names and notes rows.
-dstoolkit @ git+https://github.com/Dito-84/dstoolkit@8667b5750f4990dbf9e9264cab4fd843fb026184
+dstoolkit @ git+https://github.com/Dito-84/dstoolkit@075ce84b5950385ad1a3a0144102eacff188e2f2

@@ -101,12 +101,18 @@ This stack only ever handles the **synthetic** dataset. Real patient data would 
 
 ## Deploy it
 
-You need an AWS account, plus [Homebrew](https://brew.sh) on a Mac.
+You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and pandas need it; the app stops with a clear message on anything older), **Node.js 20 or newer** and the AWS CLI.
 
-1. **Install the tools:**
+1. **Install the tools.** With [Homebrew](https://brew.sh):
    ```bash
-   brew install awscli node
+   brew install python awscli node
    ```
+   Without Homebrew, Anaconda can supply Python and Node in their own environment (install the AWS CLI from aws.amazon.com/cli):
+   ```bash
+   conda create -y -n cdk -c conda-forge python=3.13 nodejs=22
+   export PATH="$(conda info --base)/envs/cdk/bin:$PATH"   # in each new Terminal window
+   ```
+   Check with `python3 --version` and `node --version` before creating `.venv` below.
 2. **Sign in.** In the AWS console, create a user in **IAM Identity Center** with the `AdministratorAccess` permission set. Don't use the root user. Then sign in from the terminal:
    ```bash
    aws configure sso

@@ -11,11 +11,19 @@ Settings (pass with -c name=value, or edit cdk.json):
   monthly_budget_usd           budget alert threshold, needs alert_email (default: 5)
 """
 
-import aws_cdk as cdk
-from cdk_nag import AwsSolutionsChecks
+import sys
 
-from dashboard_infra.nag import add_suppressions
-from dashboard_infra.stack import DashboardStack
+# The Lambda package pins numpy and pandas versions that need Python 3.12+, and pip checks
+# that against the Python running this app. Stop here with a clear message instead of a pip error.
+if sys.version_info < (3, 12):  # noqa: UP036 (a guard for people deploying from older Pythons)
+    sys.exit(f"infra/ needs Python 3.12 or newer; this is {sys.version.split()[0]}. "
+             "Recreate .venv with a newer Python (see 'Deploy it' in infra/README.md).")
+
+import aws_cdk as cdk  # noqa: E402
+from cdk_nag import AwsSolutionsChecks  # noqa: E402
+
+from dashboard_infra.nag import add_suppressions  # noqa: E402
+from dashboard_infra.stack import DashboardStack  # noqa: E402
 
 app = cdk.App()
 ctx = app.node.try_get_context

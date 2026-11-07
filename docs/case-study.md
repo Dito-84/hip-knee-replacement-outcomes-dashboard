@@ -160,9 +160,9 @@ Lambda can also send its failure records straight to email. I didn't use that: t
 
 The alert topic was encrypted with AWS's managed key for SNS. CloudWatch alarms **can't** publish to a topic encrypted with that key, and its policy can't be edited, so the alarms would have fired without sending anything. I found this in AWS's documentation before deploying, rather than after a missed alert. The topic now uses a customer managed key (rotated yearly, about $1 a month), which CloudWatch may use only for this account. The topic accepts alarm messages only from these two alarms. The alternative was a separate unencrypted topic for alarms. It was free, but it would have weakened an otherwise consistent rule: everything is encrypted at rest. After deploying, I tested it by forcing an alarm and confirming the email arrived.
 
-### Pinning a dependency by commit, not tag
+### Pinning a dependency so it can't change underneath you
 
-The Lambda pins dstoolkit to a commit, not to its `v0.15.1` tag. A tag can be deleted and recreated pointing at different code, and the next deploy would ship it without anyone noticing. A commit can't change. A comment beside each pin names the version, so the pin stays readable.
+At first the Lambda pinned dstoolkit to a git commit, not to its `v0.15.1` tag. A tag can be deleted and recreated pointing at different code, and the next deploy would ship it without anyone noticing. A commit can't change. Since then I've published dstoolkit to PyPI as `pandas-dstoolkit` (PyPI treats `dstoolkit` as too close to an unrelated `ds-toolkit`). GitHub Actions uploads each release through trusted publishing, so no upload token exists. The Lambda now pins version 0.15.2 **and its SHA-256 hash**. PyPI never lets a version's files be replaced, and pip refuses any file whose hash doesn't match, so the pin is as fixed as a commit. Deploying also no longer needs git or a local build.
 
 ### What it costs
 

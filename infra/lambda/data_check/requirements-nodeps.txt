@@ -1,5 +1,9 @@
-# Installed with --no-deps: its dependencies (pandas, NumPy, SciPy) are pinned in requirements.txt,
-# and matplotlib, which it needs only for plots, is left out so the package stays under Lambda's 250 MB.
-# 0.15.1 is the first version that doesn't load matplotlib on import. Pure Python, so it is
-# built here rather than downloaded as a Linux ARM64 wheel.
-dstoolkit @ git+https://github.com/Dito-84/dstoolkit@b80551acf2531425ac5a3f57c00453bc869ac118
+# dstoolkit, published on PyPI as pandas-dstoolkit, for the drift check. Installed with --no-deps:
+# its dependencies (pandas, NumPy, SciPy) are pinned in requirements.txt, and matplotlib, which it needs
+# only for plots, is left out so the package stays under Lambda's 250 MB. 0.15.1 was the first version
+# that doesn't load matplotlib on import; 0.15.2 is the same code, published to PyPI.
+# Pinned by version and SHA-256: pip refuses any file that doesn't match, and PyPI never lets a
+# version's files be replaced.
+pandas-dstoolkit==0.15.2 \
+    --hash=sha256:9d7663eaaaefbffa9cb6ce99edcd0219b5147a29a28f8a4bebabc54f707013e6 \
+    --hash=sha256:571fe4c38d2169327e0e452243e4d90a2bc6bda6b664595d7a0b4949d8722ef0

@@ -5,4 +5,4 @@ boto3
 pytest
 # The drift check's libraries, so the Lambda tests run here (the package itself is built by bundling.py)
 scipy==1.18.1
-dstoolkit @ git+https://github.com/Dito-84/dstoolkit@b80551acf2531425ac5a3f57c00453bc869ac118
+pandas-dstoolkit==0.15.2

@@ -6,8 +6,8 @@ download wheels for another platform, so this works on a Mac without Docker.
 Bundling always runs locally; there is no Docker fallback, so a pip failure
 stops the deploy with pip's own error message.
 
-dstoolkit (for the drift check) is pure Python and comes from a pinned git
-commit, so it's installed separately with --no-deps: its compiled dependencies
+dstoolkit (for the drift check, published on PyPI as pandas-dstoolkit) is
+pinned by version and hash and installed separately with --no-deps: its compiled dependencies
 come from the step above, and matplotlib, which it only needs for plots, isn't
 included. Lambda's 250 MB limit (unzipped, layers included) has room for
 pandas, NumPy and SciPy, but not matplotlib as well.

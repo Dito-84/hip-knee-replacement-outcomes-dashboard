@@ -11,7 +11,7 @@ An interactive dashboard of complications, complication readmissions and length 
 ## At a glance
 
 - **What it is:** a rebuild, in Python, of a hospital quality dashboard I built during an internship. It covers complications, readmissions and length of stay after hip and knee replacement, measured against the CMS complication measure.
-- **What the rebuild found:** six issues in the original measures, including counting records instead of surgeries, which overstated the complication rate. Each now has a test. The **[case study](docs/case-study.md)** tells the story, including how much data a hospital comparison actually needs to detect a difference.
+- **What the rebuild found:** six issues in the original measures, including counting records instead of surgeries, which overstated the complication rate. Each now has a test. The **[case study](docs/case-study.md)** tells the story, including how much data a hospital comparison actually needs to detect a difference, and the AWS architecture decisions behind the data check (packaging, drift alerts, failure alerting) with their trade-offs and costs.
 - **How it's built:** every measure is computed ahead of time by a tested Python package (53 tests plus a slow simulation check, 96% coverage enforced in CI, pinned dependencies, linted with ruff). The page is one HTML file with a Content-Security-Policy and an integrity-checked chart library, deployed to GitHub Pages and to AWS (S3 + CloudFront, defined in CDK, deployed through OIDC, security-checked by cdk-nag).
 - **How it treats data:** synthetic data only in public. Real builds can only be written to a git-ignored folder, every build stops on data errors, and small counts can be hidden to meet the CMS rule.
 
@@ -82,7 +82,7 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `build.py` | Builds a single self-contained `index.html` |
 | `tests/` | pytest suite, one file per area: loading, measures, original-formula errors, comparisons, statistics (including simulated interval coverage), suppression, build, synthetic data, quality checks |
 | `docs/measure-crosswalk.md` | Each measure against its CMS definition and Python implementation |
-| `docs/case-study.md` | The analytical story: what the rebuild found, how the methods were checked, and how much data a comparison needs |
+| `docs/case-study.md` | The analytical story: what the rebuild found, how the methods were checked, how much data a comparison needs, and the AWS architecture decisions |
 | `docs/glossary.md` | Plain-language definitions of every term on the dashboard |
 | `outcomes/suppression.py` | Optional small-cell suppression (counts of 1 to 10) for builds that will be shared |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |

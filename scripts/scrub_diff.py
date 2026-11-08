@@ -33,9 +33,10 @@ def comment(diff: str, sha: str) -> str:
     if len(diff) > LIMIT:
         diff = diff[:LIMIT] + "\n… (truncated; the full diff is in the job's log)"
     headline = "This pull request changes the AWS stacks." if changed else "No changes to the AWS stacks."
-    return (f"{MARKER}\n### `cdk diff` for {sha[:7]}\n\n{headline} Merging deploys the website only; "
-            f"the stack deploys after approval in the `production` environment. Template comparison: "
-            f"the deploy's replacement guard checks the change set itself.\n\n"
+    return (f"{MARKER}\n### `cdk diff` for {sha[:7]}\n\n{headline} Merging deploys the website straight away; "
+            f"a change to `HipKneeDashboard` then waits for approval in the `production` environment, and "
+            f"`HipKneeDashboardCi` is deployed by hand. Template comparison: the deploy's replacement guard "
+            f"checks the change set itself.\n\n"
             f"<details><summary>Diff</summary>\n\n```\n{diff.strip()}\n```\n</details>\n")
 
 

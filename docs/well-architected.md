@@ -32,7 +32,20 @@ There's one Region (`us-east-1`), one account, and a $5 monthly budget alert.
 
 The pattern was the same each time: the failure surfaced from a live check, and it got a regression test before it was closed.
 
-**Next.** Deploy the main stack from CI behind an approval gate, with a guard that fails if the change set would replace a stateful resource (in progress). Then a CloudWatch dashboard and an hourly synthetic canary for the happy path. Today the alarms only report what's broken; they don't show what's working.
+- **The main stack deploys from CI, after approval.** A merge shows its template diff, waits for a required reviewer in the `production` environment, then creates a change set. A **replacement guard** refuses the change set if a stateful resource would be replaced or removed. Then the change set is executed and the smoke test runs. Deploying from a laptop is the break-glass route only.
+
+**Escape hatches.** A gate is only safe if there's a planned way around it for the day it's wrong. Each of these is deliberate, documented, and still needs a person:
+
+| Situation | Route | What still protects it |
+|---|---|---|
+| A stateful resource **must** be replaced (a bucket rename, a new user pool) | Run **Deploy stack** by hand with **Allow replacement** ticked. The guard reports the replacement instead of refusing it | The `production` approval; the plan's diff; retained buckets and deletion protection on the pool |
+| CI itself is broken (GitHub Actions down, a broken role or workflow) | **Break-glass:** deploy `HipKneeDashboard` from the laptop (`cdk diff`, then `cdk deploy`, with the same `-c` options) | `cdk diff` reviewed before deploying, by the same person who approves CI deploys; CloudFormation's automatic rollback |
+| The CI roles need to change | Deploy `HipKneeDashboardCi` from the laptop. CI never deploys its own permissions | The plan job warns when that stack differs from what's deployed |
+| A bad deploy is already live | Revert the commit and merge, which deploys the previous template after approval. For the site alone, restore an earlier object version | Versioned site bucket; the smoke test after the redeploy |
+
+Using an escape hatch means writing down why, in the pull request or the commit.
+
+**Next.** A CloudWatch dashboard and an hourly synthetic canary for the happy path. Today the alarms only report what's broken; they don't show what's working.
 
 ## Security
 
@@ -58,7 +71,7 @@ CloudFormation deploys both stacks through the execution role that `cdk bootstra
 *How it's contained today:*
 - Only jobs in the GitHub `production` environment can assume the Deploy role, and that environment waits for my approval and accepts only `main`.
 - `main` takes changes only through pull requests with both checks passing, under a ruleset that applies to admins too.
-- Every deploy shows its diff before approval, and the replacement guard (part of the CI deploy, in progress) stops any change that would replace a stateful resource.
+- Every deploy shows its diff before approval, and the replacement guard stops any change that would replace or remove a stateful resource.
 
 *Why it isn't fixed in this change:*
 - Re-bootstrapping replaces the execution role that every deploy of both stacks depends on. A policy that's even slightly too narrow fails a deploy partway through and rolls it back.
@@ -91,7 +104,7 @@ If that phase never happens, the risk stays where it is today: bounded by who ca
   - the site and the drift reference are versioned;
   - the user pool has deletion protection;
   - both stacks have termination protection;
-  - the CI deploy's guard (in progress) will refuse to replace a stateful resource.
+  - the CI deploy's guard refuses to replace or remove a stateful resource.
 - **Failed deploys roll back on their own.** That happened once, on the stage-ordering problem above, and left the live stack unchanged.
 
 **Recovery objectives.**

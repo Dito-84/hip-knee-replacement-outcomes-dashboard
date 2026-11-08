@@ -301,10 +301,10 @@ The app has **two stacks**, so every `cdk` command names the one it means:
 
 | Stack | What it holds | Deployed by |
 |---|---|---|
-| `HipKneeDashboard` | The site, the data check, authenticated uploads | You, for now; CI after approval once the deploy workflow lands |
+| `HipKneeDashboard` | The site, the data check, authenticated uploads | CI, after you approve (see below) |
 | `HipKneeDashboardCi` | The GitHub OIDC roles CI uses: Diff, Deploy, Smoke | You, rarely, from your own machine |
 
-Merging to `main` deploys the website only. The stack, including the Lambdas, changes only when you run `cdk deploy`. A workflow ([`lambda-redeploy-reminder.yml`](../.github/workflows/lambda-redeploy-reminder.yml)) comments on any pull request that changes what the deploy would ship. After merging one of those, run `cdk diff HipKneeDashboard` and then `cdk deploy HipKneeDashboard` with the same `-c` options as your first deploy. They aren't saved in `cdk.json`, so leaving one out removes the email and budget alerts.
+Merging to `main` deploys the website straight away. If the merge also changed the main stack, or the code its Lambdas bundle, the **Deploy stack** workflow starts and waits for your approval (below). Deploying `HipKneeDashboard` from your own machine is now the break-glass route, for when CI itself is broken: run `cdk diff HipKneeDashboard`, then `cdk deploy HipKneeDashboard`, with the same `-c` options as your first deploy. They aren't saved in `cdk.json`, so leaving one out removes the email and budget alerts.
 
 Both stacks have **termination protection**: `cdk destroy` fails until you turn it off.
 
@@ -328,6 +328,17 @@ Design decisions:
 - **Public by default.** On a public repository, pull-request comments and Actions logs are public too. The workflow masks the account ID and removes it and every email address ([`scrub_diff.py`](../scripts/scrub_diff.py)) before posting; the alert email is a GitHub **secret**, which is also masked in logs.
 
 **[`stack-diff.yml`](../.github/workflows/stack-diff.yml)** posts the diff of both stacks as a comment on every pull request that touches the stacks or the code the data-check Lambda bundles, and updates it on each push. It skips itself until the `AWS_DIFF_ROLE_ARN` variable is set.
+
+**[`deploy-stack.yml`](../.github/workflows/deploy-stack.yml)** runs on merges to `main` that change the main stack or its Lambdas' code:
+
+1. **Plan** (no approval needed): the template diff, with the Diff role, written to the run's summary page so you can read it before approving. It warns if the merge also changed `HipKneeDashboardCi`, which you deploy yourself.
+2. **Deploy** waits in the `production` environment until you approve it (**Actions → Deploy stack → the run → Review deployments**). Then it:
+   - creates a CloudFormation change set through CDK's deploy role. Nothing changes yet.
+   - runs the **replacement guard** ([`check_change_set.py`](../scripts/check_change_set.py)). It refuses, and deletes the change set, if a bucket, the user pool or its domain, the limits table, the KMS key, the CloudFront distribution or the dead-letter queue would be replaced, might be replaced, or would be removed. If CloudFormation found nothing to change, it says so and skips the next step.
+   - executes the change set and waits for the update to finish. A failure rolls back on its own.
+   - runs the **smoke test** with the Smoke role and adds its results to the summary.
+
+For a deliberate replacement, run **Deploy stack** by hand (**Run workflow**) with **Allow replacement** ticked. The guard then reports the replacement instead of refusing it, and the approval gate still applies. Both deploy workflows share a concurrency group, so the stack and the website never deploy at the same time.
 
 **One-time setup** (after deploying `HipKneeDashboardCi`):
 

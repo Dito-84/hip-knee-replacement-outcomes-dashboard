@@ -20,6 +20,7 @@ on:
       - "infra/dashboard_infra/**"
       - "infra/lambda/**"
       - "outcomes/*.py"
+      - "scripts/scrub_diff.py"   # what makes the comment safe to post publicly
       - ".github/workflows/stack-diff.yml"
 
 permissions:

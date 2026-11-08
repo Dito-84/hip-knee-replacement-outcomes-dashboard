@@ -374,6 +374,15 @@ def test_users_can_write_only_their_email(template):
     assert "custom:valid_until" in client["ReadAttributes"] and "custom:expires_at" not in client["ReadAttributes"]
 
 
+def test_client_can_read_every_attribute_its_scopes_need(template):
+    """Cognito answers every code exchange with invalid_grant if the client can't read all attributes of a
+    requested scope: the email scope needs email and email_verified. This broke the first browser sign-in."""
+    _, client = _one(template, "AWS::Cognito::UserPoolClient")
+    scope_attributes = {"email": {"email", "email_verified"}, "openid": set()}
+    for scope in client["AllowedOAuthScopes"]:
+        assert scope_attributes[scope] <= set(client["ReadAttributes"]), scope
+
+
 def test_app_client_is_a_public_pkce_client_with_short_tokens(template):
     _, client = _one(template, "AWS::Cognito::UserPoolClient")
     assert client["GenerateSecret"] is False
@@ -383,8 +392,8 @@ def test_app_client_is_a_public_pkce_client_with_short_tokens(template):
     assert (client["AccessTokenValidity"], client["IdTokenValidity"], client["RefreshTokenValidity"]) == (30, 30, 60)
     assert client["TokenValidityUnits"] == {"AccessToken": "minutes", "IdToken": "minutes", "RefreshToken": "minutes"}
     assert client["EnableTokenRevocation"] is True and client["PreventUserExistenceErrors"] == "ENABLED"
-    # SRP for managed login (without it every code exchange failed with invalid_grant), the admin flow for
-    # the smoke test (needs IAM credentials), refresh. No plain-password or custom flows.
+    # SRP (Cognito's default password method), the admin flow for the smoke test (needs IAM credentials),
+    # refresh. No plain-password or custom flows.
     assert set(client["ExplicitAuthFlows"]) == {"ALLOW_USER_SRP_AUTH", "ALLOW_ADMIN_USER_PASSWORD_AUTH",
                                                 "ALLOW_REFRESH_TOKEN_AUTH"}
     for urls in (client["CallbackURLs"], client["LogoutURLs"]):

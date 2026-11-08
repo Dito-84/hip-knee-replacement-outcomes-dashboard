@@ -108,8 +108,7 @@ class Uploads(Construct):
             "WebClient",
             user_pool_client_name="upload-page",
             generate_secret=False,                            # a browser page can't keep a secret: PKCE instead
-            # SRP: the password method managed login signs users in with, and Cognito's default. Without it,
-            # managed login accepted the password but every code exchange failed with invalid_grant.
+            # SRP: the password method sign-in pages use, and Cognito's default when none is set.
             # Admin password auth is for the smoke test only and needs IAM credentials.
             auth_flows=cognito.AuthFlow(user_srp=True, admin_user_password=True),
             o_auth=cognito.OAuthSettings(
@@ -124,7 +123,9 @@ class Uploads(Construct):
             refresh_token_validity=Duration.minutes(60),      # Cognito's minimum; the page discards it
             enable_token_revocation=True,
             prevent_user_existence_errors=True,
-            read_attributes=cognito.ClientAttributes().with_standard_attributes(email=True)
+            # The email scope needs read access to email AND email_verified: without email_verified,
+            # Cognito answers every code exchange with invalid_grant (token endpoint documentation)
+            read_attributes=cognito.ClientAttributes().with_standard_attributes(email=True, email_verified=True)
                                                        .with_custom_attributes("valid_until"),
             # An explicit list: Cognito treats an empty WriteAttributes as unset, which makes every
             # attribute writable (found by scripts/smoke_upload.py). Email is required, so it stays.

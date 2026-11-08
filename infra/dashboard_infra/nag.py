@@ -19,9 +19,10 @@ def add_suppressions(stack: Stack) -> None:
             reason="A public portfolio site of synthetic data: there is no reason to block any country."),
         NagPackSuppression(
             id="AwsSolutions-CFR2",
-            reason="Static files only, no forms, logins or APIs to protect. AWS WAF would cost more than the "
-                   "rest of the stack combined; CloudFront's built-in AWS Shield Standard covers network-level "
-                   "attacks."),
+            reason="CloudFront serves static files only. The upload page's sign-in and API are separate services "
+                   "(Cognito, an HTTP API, which WAF can't attach to), protected by invitation-only accounts, "
+                   "throttling and daily limits. AWS WAF would cost more than the rest of the stack combined; "
+                   "CloudFront's built-in AWS Shield Standard covers network-level attacks."),
     ])
 
     NagSuppressions.add_resource_suppressions(stack.deploy_role, [
@@ -41,6 +42,35 @@ def add_suppressions(stack: Stack) -> None:
             reason="File names aren't known in advance, so access is scoped by prefix: read and delete "
                    "under incoming/ (rejected files and checked website uploads are deleted), write-only "
                    "under reports/."),
+    ], apply_to_children=True)
+
+    uploads = stack.uploads
+    NagSuppressions.add_resource_suppressions(uploads.user_pool, [
+        NagPackSuppression(
+            id="AwsSolutions-COG2",
+            reason="MFA is optional (authenticator apps only) by decision: reviewers are invited for a few days "
+                   "to upload synthetic files. Their accounts are admin-created, time-limited and can reach "
+                   "nothing but the upload API."),
+        NagPackSuppression(
+            id="AwsSolutions-COG8",
+            reason="The Plus tier (threat protection) has no free tier and costs more than the rest of the stack. "
+                   "Sign-up is closed, accounts expire, and the API is throttled with daily upload limits. "
+                   "Essentials, free under 10,000 users a month, already gives managed login."),
+    ])
+    NagSuppressions.add_resource_suppressions(uploads.presign.role, [
+        NagPackSuppression(
+            id="AwsSolutions-IAM5",
+            applies_to=[f"Resource::<{intake}.Arn>/incoming/web/*"],
+            reason="Each upload gets a new key (incoming/web/<user>/<uuid>.csv), so signing is scoped by prefix. "
+                   "The presigned POST policy fixes the exact key, and the bucket policy lets only this role "
+                   "write there."),
+    ], apply_to_children=True)
+    NagSuppressions.add_resource_suppressions(uploads.results.role, [
+        NagPackSuppression(
+            id="AwsSolutions-IAM5",
+            applies_to=[f"Resource::<{intake}.Arn>/reports/web/*"],
+            reason="Results are per upload (reports/web/<user>/<uuid>.csv.json), so reading is scoped by prefix. "
+                   "Read-only, and the function always builds the key from the caller's verified sub."),
     ], apply_to_children=True)
 
     NagSuppressions.add_resource_suppressions(stack.failed_checks, [

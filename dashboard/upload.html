@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--__CSP__-->
+<meta name="referrer" content="no-referrer">
+<title>Try the data check · Hip &amp; Knee Replacement Outcomes Dashboard</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1d2330; --muted: #5b6475; --line: #d9dde5; --accent: #1f5fae;
+          --ok: #1c7c46; --bad: #b3261e; --warn: #8a5a00; --bg: #ffffff; --panel: #f5f7fa; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8ebf1; --muted: #a3abba; --line: #3a4150; --accent: #8db8ff; --ok: #6fd39b;
+            --bad: #ff8a80; --warn: #ffc66d; --bg: #14171d; --panel: #1d222b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
+  h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+  p { margin: .5rem 0; }
+  .muted { color: var(--muted); }
+  .notice { border-left: 4px solid var(--warn); background: var(--panel); padding: .75rem 1rem; margin: 1rem 0; }
+  button { font: inherit; padding: .5rem 1rem; border-radius: 6px; border: 1px solid var(--accent);
+           background: var(--accent); color: var(--bg); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.link { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }
+  a { color: var(--accent); }
+  ul.samples { list-style: none; padding: 0; margin: 0; display: grid; gap: .5rem; }
+  ul.samples li { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .8rem; }
+  .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+  #status { min-height: 1.5em; }
+  #result { border: 1px solid var(--line); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+  #result h3 { margin: 0 0 .5rem; font-size: 1.1rem; }
+  .passed { color: var(--ok); } .failed, .rejected, .error { color: var(--bad); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: .5rem 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  footer { margin-top: 3rem; font-size: .9rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Try the data check</h1>
+  <p>Upload a <strong>synthetic</strong> batch of hip and knee replacement discharges. AWS checks it for data-quality
+     problems and for drift against a reference, shows you the counts, and deletes the file.</p>
+  <p class="notice"><strong>Never upload real patient data.</strong> This page only accepts the synthetic sample files
+     below. Files without the synthetic marker are refused here before they're sent, and rejected and deleted by AWS if
+     they arrive anyway.</p>
+
+  <section id="unavailable" hidden>
+    <p>Uploads aren't available on this copy of the dashboard.</p>
+  </section>
+
+  <section id="signed-out" hidden>
+    <p>Uploads are by invitation. If you've been sent an invitation, sign in with the email address it was sent to.</p>
+    <p id="signed-out-message" class="muted" role="status"></p>
+    <button id="sign-in" type="button">Sign in</button>
+  </section>
+
+  <section id="signed-in" hidden>
+    <p class="muted">Signed in as <span id="who"></span>.
+      <button id="sign-out" class="link" type="button">Sign out</button></p>
+
+    <h2>1. Download a sample batch</h2>
+    <p class="muted">Each one shows a different outcome of the check.</p>
+    <ul id="samples" class="samples"></ul>
+
+    <h2>2. Upload it</h2>
+    <div class="row">
+      <label for="file">CSV file (up to 5 MB):</label>
+      <input id="file" type="file" accept=".csv,text/csv">
+      <button id="upload" type="button" disabled>Upload and check</button>
+    </div>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="result" hidden aria-live="polite"></section>
+  </section>
+
+  <footer>
+    <p>How this works: sign-in through Amazon Cognito, a presigned S3 upload through an API Gateway HTTP API, and an
+       S3-triggered Lambda that runs the synthetic-only guard, the quality checks and the drift check. Nothing from the
+       file is shown, emailed or logged: only counts and check names.
+       <a href="https://github.com/Dito-84/hip-knee-replacement-outcomes-dashboard/blob/main/infra/README.md">Architecture and design decisions</a> ·
+       <a href="index.html">Back to the dashboard</a></p>
+  </footer>
+</main>
+<script>
+"use strict";
+const CONFIG = /*__CONFIG__*/null;
+
+// The same rules as outcomes/synthetic_guard.py, checked here so a wrong file never leaves the browser
+const MARKER_COLUMN = "Synthetic Marker";
+const MARKER_VALUE = "SYNTHETIC - NOT REAL PATIENT DATA";
+const HOSPITALS = new Set(["Hospital A", "Hospital B", "Hospital C"]);
+const MAX_BYTES = 5 * 1024 * 1024;
+
+const $ = (id) => document.getElementById(id);
+const pageUrl = location.origin + location.pathname;
+let accessToken = null;   // kept in memory only, never in browser storage
+let expiryTimer = null;
+
+function show(section, message) {
+  for (const id of ["unavailable", "signed-out", "signed-in"]) $(id).hidden = id !== section;
+  if (section === "signed-out") $("signed-out-message").textContent = message || "";
+}
+
+function setStatus(text) { $("status").textContent = text; }
+
+function b64url(bytes) {
+  let s = "";
+  for (const b of new Uint8Array(bytes)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomString(n) {
+  const bytes = new Uint8Array(n);
+  crypto.getRandomValues(bytes);
+  return b64url(bytes);
+}
+
+// Authorization code flow with PKCE: the page has no client secret, and the code is useless without the verifier
+async function signIn() {
+  const verifier = randomString(48);
+  const state = randomString(16);
+  sessionStorage.setItem("pkce", JSON.stringify({ verifier, state }));   // the verifier is not a token
+  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  const query = new URLSearchParams({
+    response_type: "code", client_id: CONFIG.clientId, redirect_uri: pageUrl, scope: "openid email",
+    state, code_challenge: challenge, code_challenge_method: "S256",
+  });
+  location.assign(`${CONFIG.authDomain}/oauth2/authorize?${query}`);
+}
+
+async function finishSignIn(params) {
+  const saved = JSON.parse(sessionStorage.getItem("pkce") || "null");
+  sessionStorage.removeItem("pkce");
+  history.replaceState(null, "", pageUrl);   // drop the code from the address bar
+  if (!saved || saved.state !== params.get("state")) throw new Error("That sign-in didn't start on this page.");
+  const res = await fetch(`${CONFIG.authDomain}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code", client_id: CONFIG.clientId, code: params.get("code"),
+      redirect_uri: pageUrl, code_verifier: saved.verifier,
+    }),
+  });
+  if (!res.ok) throw new Error("Sign-in didn't complete.");
+  const tokens = await res.json();
+  accessToken = tokens.access_token;
+  // The refresh token is deliberately not kept: Cognito's expiry check runs only on a full sign-in
+  const claims = JSON.parse(atob(tokens.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+  $("who").textContent = claims.email || "your account";
+  clearTimeout(expiryTimer);
+  expiryTimer = setTimeout(() => {
+    accessToken = null;
+    show("signed-out", "Your session ended after 30 minutes. Sign in again to carry on.");
+  }, Math.max(0, (tokens.expires_in - 30) * 1000));
+}
+
+function signOut() {
+  accessToken = null;
+  const query = new URLSearchParams({ client_id: CONFIG.clientId, logout_uri: pageUrl });
+  location.assign(`${CONFIG.authDomain}/logout?${query}`);
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c !== "\r") field += c;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// Why a file isn't one of the synthetic batches, or null if it looks like one
+function screen(name, text) {
+  if (!name.toLowerCase().endsWith(".csv")) return "it isn't a CSV file";
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const rows = parseCsv(text);
+  const headers = (rows[0] || []).map((h) => h.trim());
+  const marker = headers.indexOf(MARKER_COLUMN);
+  const hospital = headers.indexOf("Hospital");
+  if (marker < 0) return "it has no synthetic marker column";
+  if (hospital < 0) return "it has no Hospital column";
+  for (const r of rows.slice(1)) {
+    if (!r.some((cell) => cell.trim())) continue;
+    if ((r[marker] || "").trim() !== MARKER_VALUE) return "a row is missing the synthetic marker";
+    if (!HOSPITALS.has((r[hospital] || "").trim())) return "a row names a hospital that isn't one of the three fictional ones";
+  }
+  return null;
+}
+
+function api(path, options = {}) {
+  return fetch(CONFIG.apiUrl + path, {
+    ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` },
+  });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function upload() {
+  const file = $("file").files[0];
+  $("result").hidden = true;
+  if (!file) return;
+  if (file.size > MAX_BYTES) { setStatus("Not uploaded: the file is larger than 5 MB."); return; }
+  const reason = screen(file.name, await file.text());
+  if (reason) {
+    setStatus(`Not uploaded: ${reason}. Only the synthetic sample files can be checked here.`);
+    return;
+  }
+  $("upload").disabled = true;
+  try {
+    setStatus("Getting an upload link…");
+    let res = await api("/uploads", { method: "POST" });
+    if (res.status === 401) { show("signed-out", "Your session has ended. Sign in again."); return; }
+    if (res.status === 429) { setStatus("Not uploaded: the daily upload limit has been reached. Try again tomorrow."); return; }
+    if (!res.ok) { setStatus("Not uploaded: the upload service had a problem. Try again in a minute."); return; }
+    const grant = await res.json();
+
+    const form = new FormData();
+    for (const [k, v] of Object.entries(grant.fields)) form.append(k, v);
+    form.append("file", file);   // S3 needs the file last
+    setStatus("Uploading…");
+    res = await fetch(grant.url, { method: "POST", body: form });
+    if (!res.ok) { setStatus("Not uploaded: S3 refused the file (too large, or the link had expired)."); return; }
+
+    setStatus("Uploaded. Checking… this usually takes a few seconds.");
+    const until = Date.now() + 120000;
+    while (Date.now() < until) {
+      await sleep(3000);
+      res = await api(`/uploads/${grant.upload_id}`);
+      if (res.status === 404) continue;
+      if (res.status === 401) { show("signed-out", "Your session ended before the result arrived. Sign in again."); return; }
+      if (!res.ok) { setStatus("The result couldn't be fetched. Try again in a minute."); return; }
+      setStatus("");
+      renderResult(await res.json());
+      return;
+    }
+    setStatus("No result after 2 minutes. The check may have failed; the file has been deleted either way.");
+  } catch {
+    setStatus("Something went wrong in the browser. Try again.");
+  } finally {
+    $("upload").disabled = !$("file").files.length;
+  }
+}
+
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;   // textContent only: nothing from the server is parsed as HTML
+  if (className) node.className = className;
+  return node;
+}
+
+const HEADLINES = {
+  passed: "Passed the quality checks",
+  failed: "Failed the quality checks",
+  rejected: "Rejected: not a synthetic file",
+  unreadable: "Couldn't be read as a discharge file",
+  error: "The check itself failed",
+};
+
+function renderResult(r) {
+  const box = $("result");
+  box.replaceChildren(el("h3", HEADLINES[r.status] || r.status, r.status));
+  if (r.reason) box.append(el("p", r.reason));
+  if (r.records !== undefined) {
+    const dl = el("dl");
+    for (const [label, value] of [["Records", r.records.toLocaleString()], ["Errors", r.errors], ["Warnings", r.warnings]]) {
+      dl.append(el("dt", label), el("dd", String(value)));
+    }
+    box.append(dl);
+  }
+  if (r.findings && r.findings.length) {
+    box.append(el("h4", "Quality findings"));
+    const ul = el("ul");
+    for (const f of r.findings) ul.append(el("li", `${f.severity.toUpperCase()}: ${f.check}: ${f.message}`));
+    box.append(ul);
+  }
+  if (r.drift) {
+    const d = r.drift;
+    box.append(el("h4", "Drift against the reference"));
+    if (d.status === "alert") {
+      const ul = el("ul");
+      for (const a of d.alerts) ul.append(el("li", `${a.column}: ${a.reasons.join("; ")}`));
+      box.append(el("p", `${d.alerts.length} column(s) need a look:`), ul);
+    } else if (d.status === "ok") {
+      box.append(el("p", `No alerts (${d.logged} smaller change(s) logged).`));
+    } else {
+      box.append(el("p", "Drift check skipped."));
+    }
+  }
+  box.append(el("p", "The uploaded file has been deleted.", "muted"));
+  box.hidden = false;
+}
+
+function listSamples() {
+  const ul = $("samples");
+  for (const s of CONFIG.samples) {
+    const li = el("li");
+    const a = el("a", s.title);
+    a.href = `samples/${s.file}`;
+    a.download = s.file;
+    li.append(a, el("span", ` · ${s.outcome}`, "muted"));
+    ul.append(li);
+  }
+}
+
+async function start() {
+  if (!CONFIG) { show("unavailable"); return; }
+  $("sign-in").addEventListener("click", signIn);
+  $("sign-out").addEventListener("click", signOut);
+  $("upload").addEventListener("click", upload);
+  $("file").addEventListener("change", () => {
+    $("upload").disabled = !$("file").files.length;
+    $("result").hidden = true;
+    setStatus("");
+  });
+  listSamples();
+  const params = new URLSearchParams(location.search);
+  if (params.get("error")) {
+    history.replaceState(null, "", pageUrl);
+    // Cognito puts the pre-authentication trigger's message (e.g. an expired account) in error_description
+    show("signed-out", `Sign-in failed: ${params.get("error_description") || params.get("error")}`);
+    return;
+  }
+  if (params.get("code")) {
+    try {
+      await finishSignIn(params);
+      show("signed-in");
+      return;
+    } catch (err) {
+      show("signed-out", `${err.message} Try signing in again.`);
+      return;
+    }
+  }
+  show("signed-out");
+}
+
+start();
+</script>
+</body>
+</html>

@@ -263,10 +263,13 @@ def test_failed_uploads_are_retried_then_kept_in_a_queue(template):
 def test_alarms_email_on_errors_and_on_given_up_uploads(template):
     topic = _logical(template, "AWS::SNS::Topic", "DataCheckAlerts")
     alarms = template.find_resources("AWS::CloudWatch::Alarm")
-    assert len(alarms) == 2
-    by_metric = {a["Properties"]["MetricName"]: a["Properties"] for a in alarms.values()}
-    assert set(by_metric) == {"Errors", "ApproximateNumberOfMessagesVisible"}
-    for props in by_metric.values():
+    # data check (errors, gave up) + upload functions (presign, results, pre-auth) + API 5xx;
+    # 6 alarms, inside CloudWatch's free 10
+    assert len(alarms) == 6
+    metrics = sorted(a["Properties"]["MetricName"] for a in alarms.values())
+    assert metrics == ["5xx", "ApproximateNumberOfMessagesVisible", "Errors", "Errors", "Errors", "Errors"]
+    for props in alarms.values():
+        props = props["Properties"]
         assert props["AlarmActions"] == [{"Ref": topic}]
         assert props["Threshold"] == 1 and props["TreatMissingData"] == "notBreaching"
 
@@ -288,7 +291,8 @@ def test_only_this_stacks_alarms_can_publish_to_the_topic(template):
     [stmt] = [s for s in policy["Properties"]["PolicyDocument"]["Statement"] if s.get("Sid") == "AlarmsCanPublish"]
     assert stmt["Action"] == "sns:Publish"
     arns = stmt["Condition"]["ArnLike"]["aws:SourceArn"]
-    assert len(arns) == 2 and all("DataCheck" in str(a) for a in arns)
+    alarms = template.find_resources("AWS::CloudWatch::Alarm")
+    assert sorted(str(a) for a in arns) == sorted(str({"Fn::GetAtt": [k, "Arn"]}) for k in alarms)
 
 
 def test_uploads_and_reports_expire(template):
@@ -332,3 +336,139 @@ def test_outputs_give_github_what_it_needs(template):
     for name in ("SiteUrl", "SiteBucketName", "DistributionId", "DeployRoleArn", "IntakeBucketName",
                  "ReferenceBucketName", "FailedChecksQueueUrl"):
         assert name in outputs
+
+
+# ---------- Authenticated uploads ----------
+
+def _one(template, kind):
+    [(key, resource)] = template.find_resources(kind).items()
+    return key, resource["Properties"]
+
+
+def test_only_invited_users_can_sign_in(template):
+    _, pool = _one(template, "AWS::Cognito::UserPool")
+    assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True
+    assert pool["UsernameAttributes"] == ["email"]
+    assert pool["MfaConfiguration"] == "OPTIONAL" and pool["EnabledMfas"] == ["SOFTWARE_TOKEN_MFA"]   # no SMS
+    policy = pool["Policies"]["PasswordPolicy"]
+    assert policy["MinimumLength"] == 12 and policy["TemporaryPasswordValidityDays"] == 7
+    assert all(policy[k] for k in ("RequireLowercase", "RequireUppercase", "RequireNumbers", "RequireSymbols"))
+    assert pool["UserPoolTier"] == "ESSENTIALS"
+    assert pool["DeletionProtection"] == "ACTIVE"
+    assert "PreAuthentication" in pool["LambdaConfig"]
+    assert {"Name": "expires_at", "AttributeDataType": "String", "Mutable": True,
+            "StringAttributeConstraints": {"MinLength": "20", "MaxLength": "25"}} in pool["Schema"]
+
+
+def test_users_cant_write_any_attribute_so_cant_extend_their_expiry(template):
+    _, client = _one(template, "AWS::Cognito::UserPoolClient")
+    assert client["WriteAttributes"] == []
+    assert "custom:expires_at" in client["ReadAttributes"]
+
+
+def test_app_client_is_a_public_pkce_client_with_short_tokens(template):
+    _, client = _one(template, "AWS::Cognito::UserPoolClient")
+    assert client["GenerateSecret"] is False
+    assert client["AllowedOAuthFlows"] == ["code"] and client["AllowedOAuthFlowsUserPoolClient"] is True
+    assert set(client["AllowedOAuthScopes"]) == {"openid", "email"}
+    assert client["SupportedIdentityProviders"] == ["COGNITO"]
+    assert (client["AccessTokenValidity"], client["IdTokenValidity"], client["RefreshTokenValidity"]) == (30, 30, 60)
+    assert client["TokenValidityUnits"] == {"AccessToken": "minutes", "IdToken": "minutes", "RefreshToken": "minutes"}
+    assert client["EnableTokenRevocation"] is True and client["PreventUserExistenceErrors"] == "ENABLED"
+    # Only the admin flow (smoke test; needs IAM credentials) besides OAuth: no password or SRP sign-in
+    assert set(client["ExplicitAuthFlows"]) == {"ALLOW_ADMIN_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"}
+    for urls in (client["CallbackURLs"], client["LogoutURLs"]):
+        [url] = urls
+        assert url["Fn::Join"][1][-1] == "/upload.html"
+
+
+def test_managed_login_on_a_cognito_domain(template):
+    _, domain = _one(template, "AWS::Cognito::UserPoolDomain")
+    assert domain["Domain"] == "hip-knee-dashboard-dito84" and domain["ManagedLoginVersion"] == 2
+    _, branding = _one(template, "AWS::Cognito::ManagedLoginBranding")
+    assert branding["UseCognitoProvidedValues"] is True
+
+
+def test_every_api_route_needs_a_cognito_token(template):
+    routes = template.find_resources("AWS::ApiGatewayV2::Route")
+    assert sorted(r["Properties"]["RouteKey"] for r in routes.values()) == ["GET /uploads/{id}", "POST /uploads"]
+    authorizer, props = _one(template, "AWS::ApiGatewayV2::Authorizer")
+    assert props["AuthorizerType"] == "JWT"
+    for route in routes.values():
+        assert route["Properties"]["AuthorizationType"] == "JWT"
+        assert route["Properties"]["AuthorizerId"] == {"Ref": authorizer}
+
+
+def test_api_cors_allows_only_the_site(template):
+    _, api = _one(template, "AWS::ApiGatewayV2::Api")
+    cors = api["CorsConfiguration"]
+    [origin] = cors["AllowOrigins"]
+    assert origin["Fn::Join"][1][0] == "https://" and "Distribution" in str(origin)
+    assert set(cors["AllowMethods"]) == {"GET", "POST"}
+
+
+def test_api_is_throttled_and_logged(template):
+    _, stage = _one(template, "AWS::ApiGatewayV2::Stage")
+    assert stage["DefaultRouteSettings"] == {"ThrottlingBurstLimit": 10, "ThrottlingRateLimit": 5}
+    assert stage["RouteSettings"]["POST /uploads"] == {"ThrottlingBurstLimit": 2, "ThrottlingRateLimit": 1}
+    assert "AccessLogSettings" in stage and "$context.authorizer.claims.sub" in stage["AccessLogSettings"]["Format"]
+
+
+def test_presign_role_can_only_sign_web_uploads_and_count_them(template):
+    stmts = statements(template, "UploadsPresignFunctionRole")
+    by_sid = {s.get("Sid"): s for s in stmts}
+    assert by_sid["SignWebUploads"]["Action"] == "s3:PutObject"
+    assert by_sid["SignWebUploads"]["Resource"]["Fn::Join"][1][-1] == "/incoming/web/*"
+    assert by_sid["CountUploads"]["Action"] == "dynamodb:UpdateItem"
+    assert "UploadQuota" in str(by_sid["CountUploads"]["Resource"])
+    assert actions(stmts) == {"s3:PutObject", "dynamodb:UpdateItem", "logs:CreateLogStream", "logs:PutLogEvents"}
+
+
+def test_results_role_can_only_read_web_results(template):
+    stmts = statements(template, "UploadsResultsFunctionRole")
+    by_sid = {s.get("Sid"): s for s in stmts}
+    assert by_sid["ReadWebResults"]["Action"] == "s3:GetObject"
+    assert by_sid["ReadWebResults"]["Resource"]["Fn::Join"][1][-1] == "/reports/web/*"
+    assert actions(stmts) == {"s3:GetObject", "logs:CreateLogStream", "logs:PutLogEvents"}
+
+
+def test_pre_auth_trigger_has_no_aws_permissions(template):
+    assert actions(statements(template, "UploadsPreAuthFunctionRole")) == {"logs:CreateLogStream",
+                                                                            "logs:PutLogEvents"}
+
+
+def test_no_upload_function_uses_aws_managed_policies(template):
+    roles = {k: r for k, r in template.find_resources("AWS::IAM::Role").items() if k.startswith("Uploads")}
+    assert len(roles) == 3
+    assert all("ManagedPolicyArns" not in r["Properties"] for r in roles.values())
+
+
+def test_only_the_presign_role_can_write_web_uploads(template):
+    intake = [k for k in template.find_resources("AWS::S3::Bucket") if k.startswith("IntakeBucket")][0]
+    policies = [p["Properties"] for p in template.find_resources("AWS::S3::BucketPolicy").values()
+                if p["Properties"]["Bucket"] == {"Ref": intake}]
+    [stmt] = [s for p in policies for s in p["PolicyDocument"]["Statement"]
+              if s.get("Sid") == "OnlyThePresignRoleWritesWebUploads"]
+    assert stmt["Effect"] == "Deny" and stmt["Action"] == "s3:PutObject" and stmt["Principal"] == {"AWS": "*"}
+    assert stmt["Resource"]["Fn::Join"][1][-1] == "/incoming/web/*"
+    assert "UploadsPresignFunctionRole" in str(stmt["Condition"]["ArnNotEquals"]["aws:PrincipalArn"])
+
+
+def test_intake_bucket_cors_allows_only_posts_from_the_site(template):
+    [intake] = [b for k, b in template.find_resources("AWS::S3::Bucket").items() if k.startswith("IntakeBucket")]
+    [rule] = intake["Properties"]["CorsConfiguration"]["CorsRules"]
+    assert rule["AllowedMethods"] == ["POST"]
+    [origin] = rule["AllowedOrigins"]
+    assert origin["Fn::Join"][1][0] == "https://" and "Distribution" in str(origin)
+
+
+def test_upload_limits_table(template):
+    _, table = _one(template, "AWS::DynamoDB::Table")
+    assert table["BillingMode"] == "PAY_PER_REQUEST"
+    assert table["TimeToLiveSpecification"] == {"AttributeName": "expires", "Enabled": True}
+    assert table["KeySchema"] == [{"AttributeName": "pk", "KeyType": "HASH"}]
+
+
+def test_upload_page_outputs(template):
+    outputs = template.to_json()["Outputs"]
+    assert {"UploadPageUrl", "UploadApiUrl", "UserPoolId", "UserPoolClientId", "AuthDomain"} <= set(outputs)

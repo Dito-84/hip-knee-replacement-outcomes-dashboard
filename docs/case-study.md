@@ -164,6 +164,26 @@ The alert topic was encrypted with AWS's managed key for SNS. CloudWatch alarms 
 
 At first the Lambda pinned dstoolkit to a git commit, not to its `v0.15.1` tag. A tag can be deleted and recreated pointing at different code, and the next deploy would ship it without anyone noticing. A commit can't change. Since then I've published dstoolkit to PyPI as `pandas-dstoolkit` (PyPI treats `dstoolkit` as too close to an unrelated `ds-toolkit`). GitHub Actions uploads each release through trusted publishing, so no upload token exists. The Lambda now pins version 0.15.2 **and its SHA-256 hash**. PyPI never lets a version's files be replaced, and pip refuses any file whose hash doesn't match, so the pin is as fixed as a commit. Deploying also no longer needs git or a local build.
 
+### Letting reviewers upload, without ever risking real data
+
+I wanted reviewers to try the data check themselves, which meant strangers' files and a public sign-in. Two rules shaped the design. Real patient data must never be uploaded, and the design has to enforce that, not just say it. And nothing from a file is ever shown.
+
+- **The guard ships first.** Every file the synthetic generator writes carries a marker column. The check rejects and deletes anything without it, before reading a single value. The page runs the same rules in the browser, so the realistic accident, picking the real export, is refused before any byte is sent. It isn't proof: anyone could add the column on purpose. It's the safety net for accidents, and the README says so.
+- **Cognito, not IAM users.** Reviewers get tokens that one API accepts, never AWS credentials. I create every account, and each one expires on a date that can't be changed afterwards.
+- **A presigned POST, not a PUT.** S3 itself enforces the size limit and the exact key; a PUT can't cap the size.
+- **No WAF.** It can't attach to the HTTP API, and it would cost more than the whole stack. Invitation-only accounts, throttling and daily limits cover what it would.
+
+### Four things the first deploy taught me
+
+None of these showed up in synth, cdk-nag or the template tests. The live checks found them, which is why the project has a smoke test that tries every refusal for real.
+
+1. **An empty list isn't "nothing".** I gave the Cognito app client an empty list of writable attributes, meaning none. Cognito reads an empty list as unset, which means all attributes are writable, so a reviewer could have extended their own expiry. The smoke test caught it before any reviewer account existed. The expiry now lives in an attribute nobody can change.
+2. **Scopes have hidden requirements.** Every browser sign-in failed with `invalid_grant`. I ruled out PKCE (by recomputing it independently), the request, the client's OAuth settings and the expiry trigger, using CloudTrail and the trigger's logs. The answer was one line in the token endpoint documentation: the `email` scope needs read access to `email_verified` too.
+3. **Order matters in CloudFormation.** The API stage's throttle setting named a route that CloudFormation hadn't created yet, so the deploy failed and rolled back cleanly.
+4. **A refusal is not an error, but Lambda counts it as one.** Cognito can only refuse a sign-in by having the trigger throw, so the crash alarm now counts only unexpected errors.
+
+Each has a test that fails without its fix. [The Well-Architected review](well-architected.md) puts these and the other decisions in the framework's six pillars.
+
 ### What it costs
 
-The drift check adds a few seconds per upload, about $0.00005, at the same 1 GB of memory. The fixed cost is the alert topic's key, about $1 a month. The alarms, the queue and the reference copy fit in AWS's free tier or cost a fraction of a cent, all well within the $5 budget alert.
+The drift check adds a few seconds per upload, about $0.00005, at the same 1 GB of memory. The fixed cost is the alert topic's key, about $1 a month. Authenticated uploads add under $0.10 a month at demo volume: Cognito is free under 10,000 monthly users, and the API, functions and limits table are pay-per-use. The alarms, the queue and the reference copy fit in AWS's free tier or cost a fraction of a cent, all well within the $5 budget alert.

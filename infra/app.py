@@ -9,6 +9,8 @@ Settings (pass with -c name=value, or edit cdk.json):
   existing_oidc_provider_arn   set if the account already has a GitHub OIDC provider
   alert_email                  email for data-check results and budget alerts (optional)
   monthly_budget_usd           budget alert threshold, needs alert_email (default: 5)
+  auth_domain_prefix           Cognito sign-in domain prefix, unique in the region
+                               (default: hip-knee-dashboard-dito84)
 """
 
 import sys
@@ -37,9 +39,10 @@ stack = DashboardStack(
     existing_oidc_provider_arn=ctx("existing_oidc_provider_arn") or None,
     alert_email=ctx("alert_email") or None,
     monthly_budget_usd=int(ctx("monthly_budget_usd") or 5),
+    auth_domain_prefix=ctx("auth_domain_prefix") or "hip-knee-dashboard-dito84",
     env=cdk.Environment(region=ctx("region") or "us-east-1"),
     description="Hip & knee replacement outcomes dashboard: S3 + CloudFront site, GitHub OIDC deploy role, "
-                "data-check Lambda",
+                "data-check Lambda, authenticated uploads",
 )
 cdk.Tags.of(stack).add("project", "hip-knee-replacement-outcomes-dashboard")
 

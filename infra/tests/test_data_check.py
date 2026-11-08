@@ -423,3 +423,27 @@ def test_function_never_deletes_outside_incoming(handler, tmp_path):
     for key in (WEB_KEY, "incoming/bad.csv"):
         handler.handler(s3_event("intake", key), None)
     assert handler.s3.deletes and all(k.startswith("incoming/") for _, k in handler.s3.deletes)
+
+
+# ---------- The upload page's sample batches, each through the website path ----------
+
+@pytest.mark.parametrize("name, status, drift_status", [
+    ("clean", "passed", "ok"),
+    ("quality-problems", "failed", "ok"),
+    ("drift", "failed", "alert"),
+    ("no-marker", "rejected", None),
+])
+def test_each_sample_batch_gets_the_outcome_the_page_promises(handler, tmp_path, name, status, drift_status):
+    from outcomes.samples import write_samples
+
+    write_samples(tmp_path)
+    handler.s3.objects[("intake", WEB_KEY)] = (tmp_path / f"sample-{name}.csv").read_bytes()
+    handler.handler(s3_event("intake", WEB_KEY), None)
+    report = json.loads(handler.s3.objects[("intake", WEB_REPORT)])
+    assert report["status"] == status
+    assert report.get("drift", {}).get("status") == drift_status
+    assert ("intake", WEB_KEY) not in handler.s3.objects
+    if name == "quality-problems":
+        assert [f["check"] for f in report["findings"]] == ["discharge before admission"]
+    if name == "drift":
+        assert {a["column"] for a in report["drift"]["alerts"]} == {"n_tka", "measure", "excluded"}

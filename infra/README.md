@@ -5,6 +5,8 @@ Infrastructure as code (AWS CDK, Python) that runs the dashboard on AWS:
 - **Website:** S3 and CloudFront host the dashboard. GitHub Actions deploys it by signing in to AWS through OIDC, so no AWS keys are stored anywhere.
 - **Data check:** uploading a discharge file to S3 triggers a Lambda function. It first refuses anything that isn't this project's synthetic data (the **synthetic-only guard**), then runs the same [data-quality checks](../outcomes/quality.py) as `scripts/check_data.py`, compares the file with a reference snapshot for **drift**, and emails the result.
 
+- **Authenticated uploads:** reviewers you invite sign in on the AWS copy's `/upload.html` page, upload a synthetic sample batch, and see the check's counts-only result. See [Authenticated uploads](#authenticated-uploads) and [Reviewer access](#reviewer-access).
+
 The GitHub Pages site keeps working on its own. This is a second, independent way to host the dashboard.
 
 ## Architecture
@@ -84,6 +86,83 @@ A refused file is **deleted at once**, never loaded or checked, and its report s
 
 **Website uploads** (`incoming/web/<user>/<id>.csv`, added with the upload page) are deleted as soon as they've been checked, whatever the result. Nothing needs them afterwards, so the file never sits in the bucket. The delete happens in a `finally` block, so a crash doesn't skip it, and a retry then finds nothing and keeps the error report. A 1-day lifecycle rule is the backstop for a check that never finishes (a timeout). Their counts-only reports go to `reports/web/<user>/<id>.csv.json` for 7 days, and they aren't emailed unless rejected: the page shows the result instead. Reports are now named after the full path under `incoming/`, so two users' files with the same name never collide.
 
+## Authenticated uploads
+
+An invited reviewer signs in, uploads a synthetic CSV straight to S3, and sees what the data check found. The upload goes into the same intake bucket and through the same Lambda as a command-line upload, so the synthetic-only guard, the quality checks and the drift check all apply. Nothing new touches the file's contents.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor R as Reviewer (browser)
+    participant CF as CloudFront<br/>/upload.html
+    participant C as Cognito<br/>managed login
+    participant API as API Gateway<br/>HTTP API + JWT authorizer
+    participant P as Lambda<br/>presign
+    participant D as DynamoDB<br/>daily limits
+    participant S3 as S3 intake bucket<br/>incoming/web/&lt;sub&gt;/
+    participant DC as Lambda<br/>data check
+    participant Res as Lambda<br/>results
+
+    R->>CF: open the page
+    R->>R: pick a sample file; the page checks the marker locally
+    R->>C: sign in (authorization code + PKCE)
+    C-->>R: 30-minute tokens (refresh token discarded)
+    R->>API: POST /uploads (Bearer token)
+    API->>P: verified claims (sub)
+    P->>D: count 1 upload (per user, all users)
+    P-->>R: presigned POST: exact key, 1 B to 5 MB, text/csv, 5 minutes
+    R->>S3: POST the file (S3 enforces the policy)
+    S3->>DC: ObjectCreated
+    DC->>DC: synthetic-only guard, quality checks, drift
+    DC->>S3: counts-only report to reports/web/&lt;sub&gt;/; delete the upload
+    loop every 3 s, up to 2 minutes
+        R->>API: GET /uploads/{id}
+        API->>Res: verified claims (sub)
+        Res-->>R: 404 until ready, then the counts
+    end
+```
+
+**Identity: Cognito, not IAM users or IAM Identity Center.** IAM users would make reviewers principals in the AWS account, with long-lived keys to rotate and leak. That's the wrong blast radius for "upload a demo CSV". IAM Identity Center is for workforce sign-in to AWS accounts and business apps: reviewers would see an AWS access portal, and its tokens aren't what an API Gateway JWT authorizer checks without extra token exchange. A Cognito user pool keeps reviewers at the application layer: they get JWTs that one API accepts, and no AWS permissions at all. The pool is on the Essentials tier, which includes managed login and is free under 10,000 monthly active users.
+
+- **Invitation only.** Self sign-up is off; you create each account with [`scripts/demo_user.py`](../scripts/demo_user.py), and Cognito emails the reviewer a temporary password. Nobody shares a password.
+- **Accounts expire.** Each has a `custom:expires_at` date. A **pre-authentication trigger** refuses sign-in after it, to the minute, and also refuses accounts with no valid date (fail closed). It needs no AWS permissions. The app client has **no write access to any attribute**, so a reviewer can't extend their own expiry with their token. A test checks this, and the smoke test tries it.
+- **Short tokens, no refresh.** Access and ID tokens last 30 minutes. Cognito doesn't run the pre-authentication trigger on refresh, so the page discards the refresh token (60 minutes, Cognito's minimum). Tokens are kept in page memory, never in browser storage. Disabling an account takes effect within 30 minutes, the life of a token already issued, because the JWT authorizer checks signatures, not revocation.
+- **MFA is optional,** authenticator apps only. SMS would cost money and needs SNS set up for SMS.
+- **The page** uses the authorization code flow with PKCE and a public client (no secret in the page), checks `state`, and allows connections, through its Content-Security-Policy, only to the API, the Cognito domain and the intake bucket. Results are shown with `textContent` only.
+
+**Upload path: presigned POST, not presigned PUT.** A POST policy lets S3 itself enforce a size range (`content-length-range`, 1 byte to 5 MB), the exact key and the form's fields. A presigned PUT can't enforce a maximum size. It would need a signed exact Content-Length, which means trusting the client's stated size. PUT's advantages, a simpler client and multipart uploads for big files, don't matter under 5 MB. The `Content-Type: text/csv` condition is only a label the browser sends; the synthetic-only guard is the real check. The page also runs the guard's rules in the browser (a test checks it agrees with the Python guard), so a wrong file, such as the real export, is refused before any byte is sent.
+
+**One bucket, prefix-scoped.** Website uploads use `incoming/web/<sub>/<uuid>.csv` in the existing intake bucket, so the existing trigger, lifecycle rules and check apply unchanged. The presign role can only sign `PutObject` under `incoming/web/*`, the POST policy fixes the exact key, and a bucket policy **denies writes to `incoming/web/` from any principal except the presign role**, whatever else is granted later. CORS allows `POST` only, and only from the CloudFront origin. CORS is a browser rule, not authentication: the signed policy is what protects the bucket.
+
+**Limits.** HTTP APIs have no per-user usage plans, so the presign function counts uploads in DynamoDB: 20 per user per day and 200 for everyone per day, updated in one transaction (both or neither) and removed by TTL after two days. The all-users cap is what bounds the bill, since the data check is the expensive part. The stage also throttles every route (5 requests a second, bursts of 10) and `POST /uploads` harder (1 a second, bursts of 2).
+
+**Results.** The results function reads `reports/web/<caller's sub>/<id>.csv.json`, with the sub taken from the verified token, never from the request, so one reviewer can't read another's result. It returns an explicit subset of the already counts-only report, so a field added to reports later doesn't reach the browser without a decision. It has no `s3:ListBucket`, so S3 answers AccessDenied for a result that doesn't exist yet. The function treats that as "not ready" (404).
+
+**Monitoring.** Error alarms on the presign, results and pre-authentication functions, and on API 5xx responses, email the alert topic like the data-check alarms (6 alarms in all, inside CloudWatch's free 10). API access logs record the route, status, caller's sub and source IP, kept a month. Website uploads that pass aren't emailed; rejected ones are.
+
+**Why no AWS WAF.** WAF can't be attached to an HTTP API (it supports REST APIs, CloudFront, ALB, AppSync, Cognito user pools and a few others), so it couldn't protect the upload API itself. It would cost $5 a month for the web ACL plus $1 per rule, more than the whole stack's $5 budget. What it would add is covered here by invitation-only sign-in, expiring accounts, throttling, daily limits and the presigned policy, and CloudFront includes AWS Shield Standard. Worth revisiting only if sign-up were opened to the public.
+
+**Cost at demo volume** (about 10 reviewers, 100 uploads and a few thousand API calls a month): Cognito $0 (free tier), API Gateway about $0.01 ($1.00 per million requests), the three functions and DynamoDB within the free tier or fractions of a cent, logs a few cents. Under $0.10 a month in all, and no new KMS key.
+
+**What it doesn't do.** The marker can't prove a file is synthetic (see the guard). A refresh token taken from the browser's network log would work for up to 60 minutes after expiry or disabling. MFA isn't required. These fit an invitation-only demo of synthetic data; [What would change for real patient data](#what-would-change-for-real-patient-data) lists what wouldn't.
+
+## Reviewer access
+
+Run these from `infra/` with its virtual environment active and your own AWS profile. They read the pool ID from the stack's outputs.
+
+```bash
+python ../scripts/demo_user.py create reviewer@example.com --days 7
+python ../scripts/demo_user.py list
+python ../scripts/demo_user.py disable reviewer@example.com
+python ../scripts/demo_user.py delete reviewer@example.com
+```
+
+- **create** makes the account, working until the end of its last day (UTC; `--days 1` means today only, up to 30). Cognito emails the reviewer the sign-in link and a temporary password, valid 7 days, from its default sender, which can land in spam. They choose their own password on first sign-in.
+- **disable** stops sign-in at once and revokes the account's sessions. A token already issued lasts at most 30 minutes more.
+- **delete** removes the account and its email address. Do this after a demo: reviewers' email addresses are personal data, and nothing else needs them.
+
+There are no shared credentials anywhere: each reviewer has their own account, and their own password that nobody else sees.
+
 ## Design decisions
 
 These are grouped by the four areas of the AWS Well-Architected Framework, which are also the four domains of the Solutions Architect – Associate exam.
@@ -100,6 +179,7 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
 - The **synthetic-only guard** refuses and deletes anything that isn't marked synthetic data (see above).
 - The alert topic is encrypted with a **customer managed KMS key**, rotated yearly. The AWS managed `alias/aws/sns` key can't be used here, because CloudWatch alarms can't publish to a topic encrypted with it and its policy can't be edited. The key policy lets CloudWatch use the key only for this account, and the topic policy accepts alarm messages only from this stack's two alarms.
 - Failure alerts come from CloudWatch alarms, not from Lambda's failure records. Those records include the error message and could hold a value from the file; an alarm email says only which alarm fired.
+- **Uploads from the website** need a Cognito sign-in from an account you created, which expires; see [Authenticated uploads](#authenticated-uploads).
 - **The page itself** carries a Content-Security-Policy (built into the HTML, so the GitHub Pages copy has it too). It allows only the page's own script, by hash, and the chart library from jsDelivr, pinned by a subresource-integrity hash that CI checks against the CDN. A tampered library or an injected script won't run.
 
 **Reliable**
@@ -117,7 +197,7 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
 - CloudFront uses the cheapest price class (North America and Europe edge locations).
 - Lifecycle rules expire uploads after 7 days (website uploads after 1, as a backstop), reports and logs after 90 (website results after 7), and old site versions after 30.
 - ARM64 Lambda costs about 20% less than x86 for the same work.
-- AWS WAF was left out on purpose: the site is static, with nothing to log in to or submit, and WAF would cost more than everything else combined.
+- AWS WAF was left out on purpose. It can't attach to the upload API (an HTTP API), and on CloudFront it would protect only static files. It would also cost more than everything else combined. See [Why no AWS WAF](#authenticated-uploads).
 - An optional **AWS Budget** emails you before monthly spend passes $5.
 - The customer managed key for the alert topic costs about $1 a month; the two alarms and the queue fit in the free tier (10 alarms, 1 million SQS requests).
 - The drift check adds a few seconds per upload at 1 GB on ARM64 (about 1.5 s on a laptop, including loading SciPy; roughly $0.00005 per upload) and a 0.4 MB reference file in S3. The 2-minute timeout and 1 GB memory are unchanged. Both are a fraction of a cent a month, well inside the budget.
@@ -131,7 +211,8 @@ This stack only ever handles the **synthetic** dataset. Real patient data would 
 - A signed **Business Associate Addendum (BAA)** with AWS, through AWS Artifact, before any patient data is uploaded. Patient data may only go into HIPAA-eligible services; the ones that would touch it here (S3, Lambda, SNS and CloudWatch Logs) are all on that list.
 - Encryption with a **customer managed KMS key** instead of S3-managed keys, so access to the data can be audited and revoked separately.
 - **CloudTrail data events** on the intake bucket, to record who read or wrote each file.
-- Uploads restricted to known users, for example through IAM Identity Center groups or VPC endpoints, rather than anyone with access to the account.
+- Uploads restricted to the organization's own staff, signing in through its identity provider (SAML or OIDC federation into Cognito, or IAM Identity Center), with **MFA required**, Cognito's threat protection (Plus tier), and AWS WAF in front of a REST API, rather than invited reviewers.
+- No browser-side screening of patient files and no synthetic-only guard, but the same counts-only reporting, which is what makes the results safe to show.
 
 ## Deploy it
 
@@ -183,7 +264,23 @@ You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and
    aws cloudwatch describe-alarms --alarm-name-prefix HipKneeDashboard --query "MetricAlarms[].AlarmName"
    aws cloudwatch set-alarm-state --alarm-name <DataCheckErrors alarm name> --state-value ALARM --state-reason "Testing the alert email"
    ```
-8. **Try the data check:**
+8. **Turn on the upload page** (after any deploy that creates the upload resources):
+   - Add four more repository variables from the deploy output:
+
+     | Variable | Value from the deploy output |
+     |---|---|
+     | `UPLOAD_API_URL` | `UploadApiUrl` |
+     | `UPLOAD_AUTH_DOMAIN` | `AuthDomain` |
+     | `UPLOAD_CLIENT_ID` | `UserPoolClientId` |
+     | `UPLOAD_BUCKET` | `IntakeBucketName` |
+
+   - Run **Actions → Deploy to AWS → Run workflow**. The build adds `upload.html` and its sample batches only when all four are set. The GitHub Pages copy never has them.
+   - Run the end-to-end smoke test. It creates a throwaway account (no email is sent), checks every refusal path against the live stack, then deletes the account:
+     ```bash
+     python ../scripts/smoke_upload.py
+     ```
+   - Invite a reviewer (see [Reviewer access](#reviewer-access)).
+9. **Try the data check:**
    ```bash
    aws s3 cp ../data/synthetic_discharges.csv s3://<IntakeBucketName>/incoming/
    # a few seconds later you'll get an email; the full report is here:
@@ -214,7 +311,7 @@ curl -s https://api.github.com/repos/<owner>/<name> | grep -E '"id"' | head -2  
 npx aws-cdk@2 destroy
 ```
 
-The four buckets are kept on purpose. To remove them, open each one in the S3 console, choose **Empty**, then **Delete**.
+The four buckets are kept on purpose, and so is the user pool, which has deletion protection on. To remove the pool, turn deletion protection off in the Cognito console first. To remove them, open each one in the S3 console, choose **Empty**, then **Delete**.
 
 ## Tests
 
@@ -235,6 +332,12 @@ CI runs all three on every pull request. None of them needs an AWS account.
 | `dashboard_infra/stack.py` | Buckets (including the drift reference), CloudFront, OIDC deploy role, Lambda with its dead-letter queue and alarms, SNS with its key, budget |
 | `dashboard_infra/bundling.py` | Builds the Lambda package: pip downloads pandas, NumPy and SciPy for Linux ARM64, so no Docker is needed; dstoolkit is added without matplotlib |
 | `dashboard_infra/nag.py` | The documented exceptions to the cdk-nag security rules |
+| `dashboard_infra/uploads.py` | Authenticated uploads: Cognito user pool and managed login, HTTP API with a JWT authorizer, presign and results functions, DynamoDB daily limits, bucket CORS and policy, alarms |
+| `lambda/upload_api/` | `presign.py` (POST /uploads), `results.py` (GET /uploads/{id}), `common.py` |
+| `lambda/pre_auth/handler.py` | Cognito pre-authentication trigger: refuses expired demo accounts |
+| `../scripts/demo_user.py` | Create, list, disable and delete time-limited reviewer accounts |
+| `../scripts/smoke_upload.py` | End-to-end check of the deployed upload path, including every refusal |
+| `../dashboard/upload.html`, `../outcomes/samples.py` | The upload page and its four sample batches (built only for the AWS copy) |
 | `lambda/data_check/handler.py` | The data-check function: synthetic-only guard first, then the checks; it reuses the dashboard's `outcomes` package |
 | `../outcomes/synthetic_guard.py` | The synthetic-only guard (standard library only), shared with CI's no-real-data check |
 | `lambda/data_check/drift.py`, `drift_policy.py` | The drift comparison (counts only) and the one place that decides what alerts |

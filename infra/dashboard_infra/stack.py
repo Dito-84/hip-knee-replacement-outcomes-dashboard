@@ -9,6 +9,8 @@ Three parts:
   it, and it can only update this site's bucket and invalidate its CDN cache.
 * Data check: uploading a discharge file to the intake bucket under incoming/
   runs the dashboard's data-quality checks in Lambda and emails a summary.
+* Authenticated uploads (uploads.py): invited reviewers sign in on /upload.html,
+  upload a synthetic CSV through a presigned POST, and see the counts-only result.
 """
 
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
@@ -30,6 +32,7 @@ from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
 from .bundling import ARCHITECTURE, RUNTIME, data_check_code
+from .uploads import Uploads
 
 GITHUB_OIDC_URL = "https://token.actions.githubusercontent.com"
 
@@ -70,7 +73,8 @@ class DashboardStack(Stack):
     def __init__(self, scope: Construct, id: str, *, github_repo: str, github_branch: str = "main",
                  github_owner_id: str | None = None, github_repo_id: str | None = None,
                  existing_oidc_provider_arn: str | None = None, alert_email: str | None = None,
-                 monthly_budget_usd: int = 5, **kwargs) -> None:
+                 monthly_budget_usd: int = 5, auth_domain_prefix: str = "hip-knee-dashboard-dito84",
+                 **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
 
         # ---------- Logs: S3 server access logs and CloudFront standard logs ----------
@@ -289,7 +293,13 @@ class DashboardStack(Stack):
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
         )
-        for alarm in (self.error_alarm, self.lost_alarm):
+        # ---------- Authenticated uploads: sign-in, upload API, limits (uploads.py) ----------
+        self.uploads = Uploads(
+            self, "Uploads", intake_bucket=self.intake_bucket,
+            site_domain=self.distribution.distribution_domain_name, auth_domain_prefix=auth_domain_prefix)
+
+        self.alarms = [self.error_alarm, self.lost_alarm, *self.uploads.alarms]
+        for alarm in self.alarms:
             alarm.add_alarm_action(alarm_action)
         # Only this stack's alarms may publish, and only from this account
         self.alerts.add_to_resource_policy(iam.PolicyStatement(
@@ -297,7 +307,7 @@ class DashboardStack(Stack):
             principals=[iam.ServicePrincipal("cloudwatch.amazonaws.com")],
             actions=["sns:Publish"],
             resources=[self.alerts.topic_arn],
-            conditions={"ArnLike": {"aws:SourceArn": [self.error_alarm.alarm_arn, self.lost_alarm.alarm_arn]},
+            conditions={"ArnLike": {"aws:SourceArn": [alarm.alarm_arn for alarm in self.alarms]},
                         "StringEquals": {"aws:SourceAccount": self.account}},
         ))
 

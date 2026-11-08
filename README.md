@@ -89,7 +89,7 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
 | `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed, or any CSV lacks the synthetic marker |
 | `scripts/check_cdn_integrity.py` | CI check that the chart library on the CDN still matches the integrity hash in the page |
-| `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda ([details](infra/README.md)) |
+| `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda, authenticated uploads ([details](infra/README.md)) |
 
 ## Run it locally
 
@@ -142,7 +142,8 @@ With [dstoolkit](https://github.com/Dito-84/dstoolkit) installed (`pip install -
 
 [`infra/`](infra/README.md) defines the [AWS version of this site](https://d12lu6oeqxy46k.cloudfront.net) in AWS CDK (Python):
 - A private S3 bucket served through CloudFront, deployed from GitHub Actions through OIDC, so no AWS keys are stored in GitHub.
-- An S3-triggered Lambda that runs the data-quality checks on an uploaded file, checks it for drift against a read-only reference snapshot (type changes, distribution shift, more blanks, new codes, added or removed columns), and emails a counts-only summary. CloudWatch alarms and a dead-letter queue make sure a failed check is reported rather than silent.
+- An S3-triggered Lambda that runs the data-quality checks on an uploaded file, checks it for drift against a read-only reference snapshot (type changes, distribution shift, more blanks, new codes, added or removed columns), and emails a counts-only summary. CloudWatch alarms and a dead-letter queue make sure a failed check is reported rather than silent. A synthetic-only guard rejects and deletes any file without the synthetic marker.
+- Authenticated uploads for invited reviewers: Cognito sign-in (admin-created, time-limited accounts), an API Gateway HTTP API with a JWT authorizer that issues presigned S3 POSTs, daily upload limits in DynamoDB, and a page that shows the check's counts-only result. Four sample batches show each outcome. Real patient data is never uploaded, and the page and the Lambda both refuse files that aren't marked synthetic.
 
 It includes least-privilege IAM, automated cdk-nag security checks in CI, and a budget alert. Its README explains the design choices and what would change for real patient data.
 
@@ -152,7 +153,7 @@ It includes least-privilege IAM, automated cdk-nag security checks in CI, and a 
 
 ## Built with
 
-Python (pandas, NumPy), Plotly.js, pytest, ruff, uv, GitHub Actions and GitHub Pages; on AWS, CDK, S3, CloudFront, Lambda, SNS and IAM (OIDC).
+Python (pandas, NumPy), Plotly.js, pytest, ruff, uv, GitHub Actions and GitHub Pages; on AWS, CDK, S3, CloudFront, Lambda, SNS, IAM (OIDC), Cognito, API Gateway and DynamoDB.
 
 ## License
 

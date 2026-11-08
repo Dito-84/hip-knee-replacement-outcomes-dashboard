@@ -10,6 +10,12 @@ A build from any file other than the synthetic dataset must be written
 inside private/ (which git ignores) or outside this repository, so real
 results can't be committed by accident.
 
+The AWS copy of the site also gets the upload page (upload.html) and its sample
+batches (samples/), built only when all four UPLOAD_* environment variables are
+set (the "Deploy to AWS" workflow sets them from repository variables) and only
+for the synthetic dataset. The GitHub Pages copy has no upload page:
+    UPLOAD_API_URL=... UPLOAD_AUTH_DOMAIN=... UPLOAD_CLIENT_ID=... UPLOAD_BUCKET=... python build.py
+
 To share a build, hide small counts (CMS doesn't allow publishing counts of 1 to 10):
     python build.py --data private/discharges.xlsx --out private/site --suppress-under 11
 
@@ -22,6 +28,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -29,13 +36,24 @@ from pathlib import Path
 from outcomes.load import DataFormatError, load
 from outcomes.metrics import build_dashboard_data
 from outcomes.quality import run_checks
+from outcomes.samples import write_samples
 from outcomes.suppression import suppress
 
 ROOT = Path(__file__).resolve().parent
 SYNTHETIC = ROOT / "data" / "synthetic_discharges.csv"
 TEMPLATE = ROOT / "dashboard" / "template.html"
+UPLOAD_TEMPLATE = ROOT / "dashboard" / "upload.html"
 PLACEHOLDER = "/*__DATA__*/null"
+CONFIG_PLACEHOLDER = "/*__CONFIG__*/null"
 CSP_PLACEHOLDER = "<!--__CSP__-->"
+
+# Each upload setting must look like what the stack outputs: they go into the page's CSP and script
+UPLOAD_SETTINGS = {
+    "UPLOAD_API_URL": ("apiUrl", r"https://[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com"),
+    "UPLOAD_AUTH_DOMAIN": ("authDomain", r"https://[a-z0-9-]+\.auth\.[a-z0-9-]+\.amazoncognito\.com"),
+    "UPLOAD_CLIENT_ID": ("clientId", r"[a-z0-9]{20,40}"),
+    "UPLOAD_BUCKET": ("bucket", r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]"),
+}
 
 
 def content_security_policy(html):
@@ -60,6 +78,59 @@ def content_security_policy(html):
         "form-action 'none'",
     ])
     return f'<meta http-equiv="Content-Security-Policy" content="{policy}">'
+
+
+def _sha256_sources(html, tag):
+    return " ".join(
+        "'sha256-" + base64.b64encode(hashlib.sha256(code.encode("utf-8")).digest()).decode() + "'"
+        for code in re.findall(rf"<{tag}>(.*?)</{tag}>", html, flags=re.S)
+    )
+
+
+def upload_config(env=None):
+    """The upload page's settings from UPLOAD_* environment variables; None if none are set."""
+    env = os.environ if env is None else env
+    present = {name: env.get(name, "").strip() for name in UPLOAD_SETTINGS}
+    if not any(present.values()):
+        return None
+    config = {}
+    for name, (key, pattern) in UPLOAD_SETTINGS.items():
+        if not re.fullmatch(pattern, present[name]):
+            sys.exit(f"{name} is missing or doesn't look like the stack's output; set all four UPLOAD_* "
+                     f"variables from the cdk deploy outputs, or none.")
+        config[key] = present[name]
+    config["region"] = config["apiUrl"].split(".")[2]
+    return config
+
+
+def upload_csp(html, config):
+    """CSP for upload.html: its own script and style by hash, and connections only to the API,
+    the Cognito sign-in domain and the intake bucket's S3 endpoints."""
+    bucket, region = config["bucket"], config["region"]
+    policy = "; ".join([
+        "default-src 'none'",
+        f"script-src {_sha256_sources(html, 'script')}",
+        f"style-src {_sha256_sources(html, 'style')}",
+        f"connect-src {config['apiUrl']} {config['authDomain']} https://{bucket}.s3.amazonaws.com "
+        f"https://{bucket}.s3.{region}.amazonaws.com",
+        "img-src data:",
+        "base-uri 'none'",
+        "form-action 'none'",
+    ])
+    return f'<meta http-equiv="Content-Security-Policy" content="{policy}">'
+
+
+def build_upload_page(out_dir, config):
+    """Write upload.html and the sample batches it offers into out_dir."""
+    samples = write_samples(out_dir / "samples")
+    page = {k: config[k] for k in ("apiUrl", "authDomain", "clientId")} | {"samples": samples}
+    html = UPLOAD_TEMPLATE.read_text(encoding="utf-8")
+    if CONFIG_PLACEHOLDER not in html or CSP_PLACEHOLDER not in html:
+        sys.exit("Upload template is missing a placeholder")
+    html = html.replace(CONFIG_PLACEHOLDER, json.dumps(page).replace("</", "<\\/"))
+    html = html.replace(CSP_PLACEHOLDER, upload_csp(html, config))
+    (out_dir / "upload.html").write_text(html, encoding="utf-8")
+    return out_dir / "upload.html"
 
 
 def _is_safe_output(out_dir):
@@ -116,6 +187,10 @@ def main(argv=None):
     out_file.write_text(html, encoding="utf-8")
     k = data["views"]["All|All|all"]["kpis"]
     print(f"Built {out_file} from {len(records):,} records ({k['stays']:,} surgeries)")
+
+    config = upload_config()
+    if config and synthetic:   # never alongside a build of anything but the synthetic data
+        print(f"Built {build_upload_page(args.out, config)} and its sample batches")
 
 
 if __name__ == "__main__":

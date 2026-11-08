@@ -242,7 +242,7 @@ You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and
    pip install -r requirements.txt
    export AWS_PROFILE=dashboard
    npx aws-cdk@2 bootstrap                                   # once per account and region
-   npx aws-cdk@2 deploy -c alert_email=you@example.com       # omit -c ... to skip email and budget alerts
+   npx aws-cdk@2 deploy HipKneeDashboard -c alert_email=you@example.com   # omit -c ... to skip email and budget alerts
    ```
    If the deploy fails with *"Provider with url https://token.actions.githubusercontent.com already exists"*, your account already trusts GitHub. Add `-c existing_oidc_provider_arn=arn:aws:iam::<account id>:oidc-provider/token.actions.githubusercontent.com` and run the deploy again.
 4. **Confirm the email.** AWS sends a subscription confirmation; click the link in it.
@@ -297,7 +297,45 @@ You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and
 
 ### Redeploying after changes
 
-Merging to `main` deploys the website only. The stack, including the data-check Lambda, changes only when you run `cdk deploy`. So a workflow ([`lambda-redeploy-reminder.yml`](../.github/workflows/lambda-redeploy-reminder.yml)) comments on any pull request that changes what the deploy would ship: the stack definition, the Lambda's handler or requirements, or the `outcomes/` code it bundles. After merging one of those, run `cdk diff` and then `cdk deploy` with the same `-c` options as your first deploy. They aren't saved in `cdk.json`, so leaving one out removes the email and budget alerts.
+The app has **two stacks**, so every `cdk` command names the one it means:
+
+| Stack | What it holds | Deployed by |
+|---|---|---|
+| `HipKneeDashboard` | The site, the data check, authenticated uploads | You, for now; CI after approval once the deploy workflow lands |
+| `HipKneeDashboardCi` | The GitHub OIDC roles CI uses: Diff, Deploy, Smoke | You, rarely, from your own machine |
+
+Merging to `main` deploys the website only. The stack, including the Lambdas, changes only when you run `cdk deploy`. A workflow ([`lambda-redeploy-reminder.yml`](../.github/workflows/lambda-redeploy-reminder.yml)) comments on any pull request that changes what the deploy would ship. After merging one of those, run `cdk diff HipKneeDashboard` and then `cdk deploy HipKneeDashboard` with the same `-c` options as your first deploy. They aren't saved in `cdk.json`, so leaving one out removes the email and budget alerts.
+
+Both stacks have **termination protection**: `cdk destroy` fails until you turn it off.
+
+### Deploying from CI
+
+The design: a pull request shows what would change; merging changes nothing in AWS until you approve; the deploy checks the change set before applying it, then runs the smoke test. No AWS keys are stored in GitHub.
+
+**`HipKneeDashboardCi`** ([`ci.py`](dashboard_infra/ci.py)) holds three GitHub OIDC roles, each trusted for this repository in one context only:
+
+| Role | Who can assume it | What it can do |
+|---|---|---|
+| Diff | Pull requests, and the plan job on `main` | Read these two stacks' descriptions and templates; nothing else |
+| Deploy | Only jobs in the GitHub `production` environment, which waits for a required reviewer | Assume CDK's bootstrap deploy and file-publishing roles; inspect and execute change sets on `HipKneeDashboard` |
+| Smoke | The same environment | What [`smoke_upload.py`](../scripts/smoke_upload.py) needs: throwaway-account admin calls on the user pool, reading the stack's outputs, checking website uploads were deleted |
+
+Design decisions:
+
+- **A separate stack.** If these roles lived in the stack CI deploys, one bad change could lock CI out of deploying the fix. This one changes rarely, and you deploy it yourself.
+- **Not CDK's lookup role for diffs.** It carries `ReadOnlyAccess`, which includes `s3:GetObject` on every bucket, and a pull request's diff runs that branch's code. The Diff role reads two templates and nothing else. Pull requests from forks and Dependabot can't get OIDC tokens, so their diff is skipped.
+- **Template diffs before approval, and a replacement guard after.** A full `cdk diff` creates a change set, which needs the deploy role; granting that before approval would undermine the gate. So pull requests and the plan job compare templates (`--method=template`), and the deploy job creates the change set, fails if it would replace a stateful resource, and only then executes it.
+- **Public by default.** On a public repository, pull-request comments and Actions logs are public too. The workflow masks the account ID and removes it and every email address ([`scrub_diff.py`](../scripts/scrub_diff.py)) before posting; the alert email is a GitHub **secret**, which is also masked in logs.
+
+**[`stack-diff.yml`](../.github/workflows/stack-diff.yml)** posts the diff of both stacks as a comment on every pull request that touches the stacks or the code the data-check Lambda bundles, and updates it on each push. It skips itself until the `AWS_DIFF_ROLE_ARN` variable is set.
+
+**One-time setup** (after deploying `HipKneeDashboardCi`):
+
+1. `npx aws-cdk@2 deploy HipKneeDashboardCi`, then note its three outputs.
+2. Under **Settings → Environments**, create `production`: add yourself as a **required reviewer**, and limit deployment branches to `main`.
+3. Under **Settings → Secrets and variables → Actions**, add the secret `ALERT_EMAIL`, and the variables `AWS_DIFF_ROLE_ARN`, `AWS_STACK_DEPLOY_ROLE_ARN` and `AWS_SMOKE_ROLE_ARN` from the outputs.
+
+**Known trade-off:** CDK's bootstrap CloudFormation execution role has `AdministratorAccess` by default, so approving a deploy approves admin-level changes, exactly as a deploy from your own machine does. The approval gate, `main`-only trust and the branch ruleset contain it. Scoping that role is a separate phase; [`docs/well-architected.md`](../docs/well-architected.md) explains why and how.
 
 ### Using this with another repository
 
@@ -310,10 +348,10 @@ curl -s https://api.github.com/repos/<owner>/<name> | grep -E '"id"' | head -2  
 ### Tear it down
 
 ```bash
-npx aws-cdk@2 destroy
+npx aws-cdk@2 destroy HipKneeDashboardCi HipKneeDashboard
 ```
 
-The four buckets are kept on purpose, and so is the user pool, which has deletion protection on. To remove the pool, turn deletion protection off in the Cognito console first. To remove them, open each one in the S3 console, choose **Empty**, then **Delete**.
+Both stacks have termination protection, so turn it off first, in the CloudFormation console (**Stack actions → Edit termination protection**). The four buckets are kept on purpose, and so is the user pool, which has deletion protection on. To remove the pool, turn deletion protection off in the Cognito console first. To remove them, open each one in the S3 console, choose **Empty**, then **Delete**.
 
 ## Tests
 
@@ -334,6 +372,8 @@ CI runs all three on every pull request. None of them needs an AWS account.
 | `dashboard_infra/stack.py` | Buckets (including the drift reference), CloudFront, OIDC deploy role, Lambda with its dead-letter queue and alarms, SNS with its key, budget |
 | `dashboard_infra/bundling.py` | Builds the Lambda package: pip downloads pandas, NumPy and SciPy for Linux ARM64, so no Docker is needed; dstoolkit is added without matplotlib |
 | `dashboard_infra/nag.py` | The documented exceptions to the cdk-nag security rules |
+| `dashboard_infra/ci.py` | The CI stack: GitHub OIDC roles for diffs, approved deploys and smoke tests |
+| `../scripts/scrub_diff.py` | Removes the account ID and email addresses from `cdk diff` output before it's posted on the public repository |
 | `dashboard_infra/uploads.py` | Authenticated uploads: Cognito user pool and managed login, HTTP API with a JWT authorizer, presign and results functions, DynamoDB daily limits, bucket CORS and policy, alarms |
 | `lambda/upload_api/` | `presign.py` (POST /uploads), `results.py` (GET /uploads/{id}), `common.py` |
 | `lambda/pre_auth/handler.py` | Cognito pre-authentication trigger: refuses expired demo accounts |

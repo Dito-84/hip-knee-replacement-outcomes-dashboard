@@ -11,7 +11,8 @@ create: Cognito emails the reviewer a temporary password and the sign-in link;
 they choose their own password on first sign-in. Nobody shares a password.
 The account stops being able to sign in at the end of its last day (UTC), enforced
 by the pre-authentication trigger; an access token already issued lasts at most
-30 minutes more.
+30 minutes more. The date can't be changed afterwards (it's immutable, so a user
+can't extend it): to give someone more time, delete the account and create it again.
 
 disable: stops sign-in at once and revokes the account's refresh tokens.
 delete: removes the account and its email address from Cognito. Do this after a demo.
@@ -35,7 +36,7 @@ def stack_output(cloudformation, name: str) -> str:
 
 
 def expiry(days: int, now: datetime | None = None) -> str:
-    """The end of the last day, UTC, as Cognito's custom:expires_at (e.g. 2026-11-15T23:59:59Z)."""
+    """The end of the last day, UTC, as Cognito's custom:valid_until (e.g. 2026-11-15T23:59:59Z)."""
     now = now or datetime.now(UTC)
     last = (now + timedelta(days=days - 1)).date()
     return f"{last.isoformat()}T23:59:59Z"
@@ -62,7 +63,7 @@ def main(argv=None):
         cognito.admin_create_user(
             UserPoolId=pool, Username=args.email, DesiredDeliveryMediums=["EMAIL"],
             UserAttributes=[{"Name": "email", "Value": args.email}, {"Name": "email_verified", "Value": "true"},
-                            {"Name": "custom:expires_at", "Value": expires}])
+                            {"Name": "custom:valid_until", "Value": expires}])
         print(f"Created {args.email}; it can sign in until {expires}. Cognito has emailed the invitation "
               "(it can land in spam).")
     elif args.action == "disable":
@@ -79,7 +80,7 @@ def main(argv=None):
                 attrs = {a["Name"]: a["Value"] for a in user.get("Attributes", [])}
                 state = "enabled" if user["Enabled"] else "disabled"
                 print(f"{attrs.get('email', user['Username'])}\t{state}\t{user['UserStatus']}\t"
-                      f"expires {attrs.get('custom:expires_at', '(none)')}")
+                      f"valid until {attrs.get('custom:valid_until', '(none)')}")
 
 
 if __name__ == "__main__":

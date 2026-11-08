@@ -202,10 +202,10 @@ def pre_auth():
     return load(PRE_AUTH, "handler")
 
 
-def auth_event(expires_at=None):
-    attrs = {"email": "reviewer@example.com"}
-    if expires_at is not None:
-        attrs["custom:expires_at"] = expires_at
+def auth_event(valid_until=None, **extra):
+    attrs = {"email": "reviewer@example.com", **extra}
+    if valid_until is not None:
+        attrs["custom:valid_until"] = valid_until
     return {"request": {"userAttributes": attrs}, "response": {}}
 
 
@@ -215,16 +215,22 @@ def test_sign_in_allowed_before_expiry(pre_auth):
     assert pre_auth.handler(e, None) is e
 
 
-@pytest.mark.parametrize("expires_at", [
+def test_the_retired_expiry_attribute_is_ignored(pre_auth):
+    future = (datetime.now(UTC) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with pytest.raises(pre_auth.AccountExpired):
+        pre_auth.handler(auth_event(None, **{"custom:expires_at": future}), None)
+
+
+@pytest.mark.parametrize("valid_until", [
     "2020-01-01T00:00:00Z",           # expired
     None,                             # no expiry: fails closed
     "",
     "next week",                      # unreadable
     "2099-01-01T00:00:00",            # no time zone: refused rather than guessed
 ])
-def test_sign_in_refused_after_expiry_or_without_a_valid_one(pre_auth, expires_at):
+def test_sign_in_refused_after_expiry_or_without_a_valid_one(pre_auth, valid_until):
     with pytest.raises(pre_auth.AccountExpired):
-        pre_auth.handler(auth_event(expires_at), None)
+        pre_auth.handler(auth_event(valid_until), None)
 
 
 # ---------- scripts/demo_user.py ----------

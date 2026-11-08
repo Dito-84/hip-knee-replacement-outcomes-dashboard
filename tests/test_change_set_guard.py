@@ -62,3 +62,23 @@ def test_exit_codes(tmp_path, capsys):
 def test_no_change_set_means_nothing_to_deploy(monkeypatch):
     monkeypatch.setattr(guard, "fetch_changes", lambda *_: None)
     assert guard.main(["--stack", "S", "--change-set", "c"]) == guard.NO_CHANGES
+
+
+def test_an_empty_change_set_is_nothing_to_deploy_not_something_to_execute(monkeypatch):
+    """CloudFormation marks a change set with no changes FAILED and keeps it; executing it errors.
+    The first manual run of the deploy workflow hit exactly this."""
+    reason = ("The submitted information didn't contain changes. Submit different information "
+              "to create a change set.")
+    monkeypatch.setattr(guard, "fetch_changes", lambda *_: ("FAILED", reason, []))
+    assert guard.main(["--stack", "S", "--change-set", "c"]) == guard.NO_CHANGES
+
+
+def test_a_change_set_that_failed_for_a_real_reason_fails_the_job(monkeypatch, capsys):
+    monkeypatch.setattr(guard, "fetch_changes", lambda *_: ("FAILED", "Template format error", []))
+    assert guard.main(["--stack", "S", "--change-set", "c"]) == 1
+    assert "Template format error" in capsys.readouterr().out
+
+
+def test_a_change_set_still_being_created_isnt_executed(monkeypatch):
+    monkeypatch.setattr(guard, "fetch_changes", lambda *_: ("CREATE_PENDING", "", []))
+    assert guard.main(["--stack", "S", "--change-set", "c"]) == 1

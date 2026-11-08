@@ -8,8 +8,10 @@ the change set is executed:
 The template diff shown before approval can't say whether CloudFormation will
 replace a resource (that needs a change set, which needs the deploy role). This
 reads the change set itself and fails if a stateful resource would be replaced,
-or might be ("Conditional"), or removed. Exit codes: 0 safe to execute, 1 refused,
-3 no change set (nothing to deploy). With --allow-replacement it reports but
+or might be ("Conditional"), or removed. Exit codes: 0 safe to execute, 1 refused
+or the change set failed for a real reason, 3 nothing to deploy (no change set, or
+CloudFormation found no changes: it marks such a change set FAILED rather than
+deleting it, and it can't be executed). With --allow-replacement it reports but
 doesn't refuse: for a deliberate replacement, run the workflow by hand with that
 input set.
 """
@@ -29,6 +31,12 @@ STATEFUL = {
     "AWS::SQS::Queue": "queue (failed checks waiting to be looked at)",
 }
 NO_CHANGES = 3
+EMPTY_REASONS = ("didn't contain changes", "No updates are to be performed")
+
+
+def nothing_to_change(status: str, reason: str) -> bool:
+    """A change set CloudFormation refused because the stack is already up to date."""
+    return status == "FAILED" and any(r in (reason or "") for r in EMPTY_REASONS)
 
 
 def violations(changes: list[dict]) -> list[str]:
@@ -59,25 +67,27 @@ def summary(changes: list[dict]) -> str:
     return "\n".join(rows)
 
 
-def fetch_changes(stack: str, change_set: str) -> list[dict] | None:
+def fetch_changes(stack: str, change_set: str) -> tuple[str, str, list[dict]] | None:
+    """(status, status reason, changes), or None if there's no such change set."""
     import boto3
     from botocore.exceptions import ClientError
 
     cfn = boto3.client("cloudformation")
-    changes, token = [], None
+    changes, token, status, reason = [], None, "", ""
     try:
         while True:
             kwargs = {"StackName": stack, "ChangeSetName": change_set}
             if token:
                 kwargs["NextToken"] = token
             page = cfn.describe_change_set(**kwargs)
+            status, reason = page.get("Status", ""), page.get("StatusReason", "")
             changes += page.get("Changes", [])
             token = page.get("NextToken")
             if not token:
-                return changes
+                return status, reason, changes
     except ClientError as err:
         if err.response["Error"].get("Code") == "ChangeSetNotFound":
-            return None   # CDK deletes an empty change set: nothing to deploy
+            return None
         raise
 
 
@@ -91,12 +101,21 @@ def main(argv=None) -> int:
 
     if args.from_file:
         with open(args.from_file) as f:
-            changes = json.load(f)
+            data = json.load(f)
+        fetched = (data.get("Status", "CREATE_COMPLETE"), data.get("StatusReason", ""), data.get("Changes", [])) \
+            if isinstance(data, dict) else ("CREATE_COMPLETE", "", data)
     else:
-        changes = fetch_changes(args.stack, args.change_set)
-    if changes is None:
+        fetched = fetch_changes(args.stack, args.change_set)
+    if fetched is None:
         print("No change set: CloudFormation found nothing to change.")
         return NO_CHANGES
+    status, reason, changes = fetched
+    if nothing_to_change(status, reason):
+        print("CloudFormation found nothing to change (the stack is already up to date).")
+        return NO_CHANGES
+    if status != "CREATE_COMPLETE":
+        print(f"::error title=Change set not ready::status {status}: {reason}")
+        return 1
     print(summary(changes))
     found = violations(changes)
     for problem in found:

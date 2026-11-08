@@ -334,11 +334,11 @@ Design decisions:
 1. **Plan** (no approval needed): the template diff, with the Diff role, written to the run's summary page so you can read it before approving. It warns if the merge also changed `HipKneeDashboardCi`, which you deploy yourself.
 2. **Deploy** waits in the `production` environment until you approve it (**Actions → Deploy stack → the run → Review deployments**). Then it:
    - creates a CloudFormation change set through CDK's deploy role. Nothing changes yet.
-   - runs the **replacement guard** ([`check_change_set.py`](../scripts/check_change_set.py)). It refuses, and deletes the change set, if a bucket, the user pool or its domain, the limits table, the KMS key, the CloudFront distribution or the dead-letter queue would be replaced, might be replaced, or would be removed. If CloudFormation found nothing to change, it says so and skips the next step.
+   - runs the **replacement guard** ([`check_change_set.py`](../scripts/check_change_set.py)). It refuses, and deletes the change set, if a bucket, the user pool or its domain, the limits table, the KMS key, the CloudFront distribution or the dead-letter queue would be replaced, might be replaced, or would be removed. If CloudFormation found nothing to change (it marks such a change set FAILED, not deleted), it removes it, says so and skips the next step. A change set that failed for any other reason fails the job, with the reason.
    - executes the change set and waits for the update to finish. A failure rolls back on its own.
    - runs the **smoke test** with the Smoke role and adds its results to the summary.
 
-For a deliberate replacement, run **Deploy stack** by hand (**Run workflow**) with **Allow replacement** ticked. The guard then reports the replacement instead of refusing it, and the approval gate still applies. Both deploy workflows share a concurrency group, so the stack and the website never deploy at the same time.
+For a deliberate replacement, run **Deploy stack** by hand (**Run workflow**) with **Allow replacement** ticked. The guard then reports the replacement instead of refusing it, and the approval gate still applies. Stack deploys run one at a time, in their own concurrency group. It's separate from the website deploy's, because a run waiting for approval would otherwise hold up the website, and with a second merge GitHub would cancel the waiting website deploy.
 
 **One-time setup** (after deploying `HipKneeDashboardCi`):
 

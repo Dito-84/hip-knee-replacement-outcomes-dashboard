@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """CDK app for the dashboard's AWS hosting. See infra/README.md.
 
+Two stacks; name the one you mean (cdk diff HipKneeDashboard, cdk deploy HipKneeDashboard):
+  HipKneeDashboard     the site, data check and uploads (deployed by CI after approval)
+  HipKneeDashboardCi   the GitHub OIDC roles CI deploys with (deployed rarely, from a laptop)
+
 Settings (pass with -c name=value, or edit cdk.json):
   github_repo                  owner/name of the repository allowed to deploy
   github_branch                branch allowed to deploy (default: main)
@@ -24,7 +28,8 @@ if sys.version_info < (3, 12):  # noqa: UP036 (a guard for people deploying from
 import aws_cdk as cdk  # noqa: E402
 from cdk_nag import AwsSolutionsChecks  # noqa: E402
 
-from dashboard_infra.nag import add_suppressions  # noqa: E402
+from dashboard_infra.ci import CiStack  # noqa: E402
+from dashboard_infra.nag import add_ci_suppressions, add_suppressions  # noqa: E402
 from dashboard_infra.stack import DashboardStack  # noqa: E402
 
 app = cdk.App()
@@ -43,11 +48,24 @@ stack = DashboardStack(
     env=cdk.Environment(region=ctx("region") or "us-east-1"),
     description="Hip & knee replacement outcomes dashboard: S3 + CloudFront site, GitHub OIDC deploy role, "
                 "data-check Lambda, authenticated uploads",
+    termination_protection=True,   # a mistaken `cdk destroy` fails instead of starting
 )
-cdk.Tags.of(stack).add("project", "hip-knee-replacement-outcomes-dashboard")
+ci_stack = CiStack(
+    app, "HipKneeDashboardCi",
+    github_repo=ctx("github_repo"),
+    github_branch=ctx("github_branch") or "main",
+    github_owner_id=str(ctx("github_owner_id") or "") or None,
+    github_repo_id=str(ctx("github_repo_id") or "") or None,
+    env=cdk.Environment(region=ctx("region") or "us-east-1"),
+    description="Hip & knee replacement outcomes dashboard: GitHub OIDC roles for CI diffs, deploys and smoke tests",
+    termination_protection=True,
+)
+for s in (stack, ci_stack):
+    cdk.Tags.of(s).add("project", "hip-knee-replacement-outcomes-dashboard")
 
 # Fail synth on any AWS Solutions security finding that isn't explained in nag.py
 add_suppressions(stack)
+add_ci_suppressions(ci_stack)
 cdk.Aspects.of(app).add(AwsSolutionsChecks(verbose=True))
 
 app.synth()

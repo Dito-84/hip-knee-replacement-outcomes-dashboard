@@ -56,8 +56,8 @@ jobs:
           Merging deploys the website only; the data-check Lambda and the rest of the stack stay on their current version until you run, from \`infra/\`:
 
           \`\`\`bash
-          npx aws-cdk@2 diff   -c alert_email=you@example.com
-          npx aws-cdk@2 deploy -c alert_email=you@example.com
+          npx aws-cdk@2 diff   HipKneeDashboard -c alert_email=you@example.com
+          npx aws-cdk@2 deploy HipKneeDashboard -c alert_email=you@example.com
           \`\`\`
 
           Use the same \`-c\` options as the first deploy (and \`-c existing_oidc_provider_arn=…\` if you used it): they aren't saved in \`cdk.json\`, so leaving one out removes the email and budget alerts. The diff should show only what this pull request changed. Steps: [infra/README.md → Deploy it]($SERVER/$REPO/blob/main/infra/README.md#deploy-it)."

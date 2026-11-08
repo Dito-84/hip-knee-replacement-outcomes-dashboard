@@ -1,0 +1,88 @@
+name: Stack diff
+
+# Posts what `cdk deploy` would change to any pull request that touches the
+# AWS stacks or the code the data-check Lambda bundles, so the change is
+# reviewed before merging. Read-only: the Diff role (infra/dashboard_infra/ci.py)
+# can only describe these two stacks and read their templates.
+#
+# Skips itself until the repository variable AWS_DIFF_ROLE_ARN is set, and on
+# pull requests from forks and Dependabot, which can't get AWS credentials.
+#
+# The repository is public, so this comment and the job's logs are too: the
+# account ID and the alert email are masked and removed before anything is posted.
+
+on:
+  pull_request:
+    paths:
+      - "infra/app.py"
+      - "infra/cdk.json"
+      - "infra/requirements.txt"
+      - "infra/dashboard_infra/**"
+      - "infra/lambda/**"
+      - "outcomes/*.py"
+      - ".github/workflows/stack-diff.yml"
+
+permissions:
+  contents: read
+  id-token: write        # the OIDC token AWS checks for the Diff role
+  pull-requests: write   # the diff comment
+
+concurrency:
+  group: stack-diff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    if: >-
+      vars.AWS_DIFF_ROLE_ARN != '' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            infra/requirements.txt
+            infra/lambda/data_check/requirements.txt
+            infra/lambda/data_check/requirements-nodeps.txt
+      - run: pip install -r infra/requirements.txt
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DIFF_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Diff both stacks (template comparison, read-only)
+        working-directory: infra
+        env:
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          account=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$account"
+          # --method=template compares templates without creating a change set, which would
+          # need the deploy role. The deploy workflow's replacement guard covers what this can't see.
+          npx --yes aws-cdk@2 diff HipKneeDashboard HipKneeDashboardCi --method=template --no-color \
+            -c alert_email="$ALERT_EMAIL" > ../diff.txt 2>&1 || echo "cdk diff exited $?" >> ../diff.txt
+          python3 ../scripts/scrub_diff.py ../diff.txt "$account" "$ALERT_EMAIL"
+          cat ../diff.txt
+
+      - name: Comment on the pull request (updated in place)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 scripts/scrub_diff.py --comment diff.txt "$SHA" > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- stack-diff -->")) | .id' | head -1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@comment.md > /dev/null
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@comment.md > /dev/null
+          fi

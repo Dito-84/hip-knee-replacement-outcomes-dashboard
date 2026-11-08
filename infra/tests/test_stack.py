@@ -510,3 +510,11 @@ def test_refusing_an_expired_account_doesnt_set_off_the_crash_alarm(template):
     assert "PreAuthFunctionLogs" in str(props["LogGroupName"])
     [transform] = props["MetricTransformations"]
     assert transform["MetricName"] == "PreAuthUnexpectedErrors" and transform["MetricValue"] == "1"
+
+
+def test_both_stacks_have_termination_protection():
+    """Set in app.py, so a mistaken `cdk destroy` fails instead of starting."""
+    import re
+
+    app_py = (__import__("pathlib").Path(__file__).resolve().parents[1] / "app.py").read_text()
+    assert len(re.findall(r"termination_protection=True", app_py)) == 2

@@ -40,9 +40,10 @@ permissions:
   contents: read
   id-token: write   # the OIDC tokens AWS checks for the Diff, Deploy and Smoke roles
 
-# Shared with the website deploy, so the two never run at once
+# Its own group: a run waiting for approval mustn't hold up (or, with a second merge,
+# cancel) the website deploy. The two change different things: the site bucket vs the stack.
 concurrency:
-  group: aws-deploy
+  group: aws-stack-deploy
   cancel-in-progress: false
 
 defaults:
@@ -127,9 +128,11 @@ jobs:
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
         run: |
           echo "::add-mask::$(aws sts get-caller-identity --query Account --output text)"
-          echo "CHANGE_SET=ci-${GITHUB_SHA::7}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          # Unique per run and attempt: a manual run from the same commit gets its own change set
+          name="ci-${GITHUB_SHA::7}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "CHANGE_SET=$name" >> "$GITHUB_ENV"
           npx --yes aws-cdk@2 deploy "$STACK" --method=prepare-change-set \
-            --change-set-name "ci-${GITHUB_SHA::7}-${GITHUB_RUN_ATTEMPT}" \
+            --change-set-name "$name" \
             --require-approval never -c alert_email="$ALERT_EMAIL"
 
       - name: Replacement guard
@@ -141,7 +144,12 @@ jobs:
           python3 scripts/check_change_set.py --stack "$STACK" --change-set "$CHANGE_SET" $ALLOW | tee guard.txt
           code=${PIPESTATUS[0]}
           { echo "## Change set $CHANGE_SET"; cat guard.txt; } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$code" = 3 ]; then echo "changes=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$code" = 3 ]; then
+            # CloudFormation keeps an empty change set as FAILED; remove it
+            aws cloudformation delete-change-set --stack-name "$STACK" --change-set-name "$CHANGE_SET" 2>/dev/null || true
+            echo "Nothing to deploy." >> "$GITHUB_STEP_SUMMARY"
+            echo "changes=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           if [ "$code" != 0 ]; then
             aws cloudformation delete-change-set --stack-name "$STACK" --change-set-name "$CHANGE_SET" || true
             exit "$code"

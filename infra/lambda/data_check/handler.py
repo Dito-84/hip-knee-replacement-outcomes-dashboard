@@ -2,15 +2,24 @@
 
 Triggered by S3 when an object lands under incoming/. For each file it:
 
-1. loads it with outcomes.load (the same loader the dashboard build uses),
-2. runs outcomes.quality.run_checks,
-3. compares it with the reference snapshot for drift (drift.py; what alerts is
+1. screens it with the synthetic-only guard (outcomes/synthetic_guard.py): a file
+   without the synthetic marker, or with a hospital that isn't one of the three
+   fictional ones, is deleted at once and reported as "rejected", unchecked,
+2. loads it with outcomes.load (the same loader the dashboard build uses),
+3. runs outcomes.quality.run_checks,
+4. compares it with the reference snapshot for drift (drift.py; what alerts is
    decided in drift_policy.py),
-4. writes a JSON report to reports/<file name>.json in the same bucket, and
-5. publishes a summary to the SNS topic.
+5. writes a JSON report to reports/<path under incoming/>.json in the same bucket, and
+6. publishes a summary to the SNS topic. Uploads from the website (incoming/web/)
+   are only emailed when rejected; the page shows their result instead.
 
-Reports and notifications contain only counts, column names and check names,
-never values from the records, so they can't leak anything from the file.
+Files from the website are deleted as soon as they've been checked, whatever the
+result: nothing needs them afterwards.
+
+Reports, notifications and logs contain only counts, column names and check names,
+never values from the records, so they can't leak anything from the file. That
+includes failures: an unexpected error is logged and re-raised by its type only,
+because an exception's message can quote a cell.
 
 The reference snapshot is read-only here: the function can read that one
 object and has no permission to write it. It is replaced only deliberately,
@@ -31,12 +40,15 @@ from botocore.exceptions import ClientError
 import drift
 from outcomes.load import DataFormatError, load, load_raw
 from outcomes.quality import run_checks
+from outcomes.synthetic_guard import check as synthetic_check
 
 REPORT_PREFIX = os.environ.get("REPORT_PREFIX", "reports/")
 TOPIC_ARN = os.environ.get("TOPIC_ARN", "")
 REFERENCE_BUCKET = os.environ.get("REFERENCE_BUCKET", "")
 REFERENCE_KEY = os.environ.get("REFERENCE_KEY", "reference/discharges.csv")
 SUPPORTED = {".csv", ".xlsx", ".xlsm", ".xls"}
+INCOMING_PREFIX = "incoming/"
+WEB_PREFIX = "incoming/web/"   # uploads from the website's /upload.html page
 
 s3 = boto3.client("s3")
 sns = boto3.client("sns")
@@ -118,28 +130,75 @@ def summary(report: dict) -> tuple[str, str]:
     return subject, "\n".join(lines)
 
 
+class CheckFailed(RuntimeError):
+    """Raised in place of an unexpected error, carrying only the original error's type."""
+
+
+def report_key_for(key: str) -> str:
+    """reports/<path under incoming/>.json, so uploads with the same file name never collide."""
+    relative = key[len(INCOMING_PREFIX):] if key.startswith(INCOMING_PREFIX) else PurePosixPath(key).name
+    return f"{REPORT_PREFIX}{relative}.json"
+
+
+def rejected(name: str, reason: str) -> dict:
+    return {"file": name, "checked_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "status": "rejected", "reason": f"not a synthetic file: {reason}", "deleted": True}
+
+
+def check_object(bucket: str, key: str) -> dict | None:
+    """Screen, check and report one uploaded object. None if it no longer exists."""
+    name = PurePosixPath(key).name
+    with tempfile.TemporaryDirectory() as tmp:
+        local = Path(tmp) / name
+        try:
+            s3.download_file(bucket, key, str(local))
+        except ClientError as err:
+            if err.response["Error"].get("Code") in ("404", "NoSuchKey"):
+                return None   # already handled and deleted (a retry), or removed by its owner
+            raise
+        reason = synthetic_check(local)
+        if reason:
+            s3.delete_object(Bucket=bucket, Key=key)
+            return rejected(name, reason)
+        reference, about = fetch_reference(Path(tmp))
+        report = check_file(local, reference)
+    if "drift" in report:
+        report["drift"]["reference"] = about
+    elif report["status"] in ("passed", "failed"):
+        report["drift"] = {"status": "skipped", **about}
+    return report
+
+
 def handler(event, context):
     results = []
     for record in event.get("Records", []):
         bucket = record["s3"]["bucket"]["name"]
         key = unquote_plus(record["s3"]["object"]["key"])
         name = PurePosixPath(key).name
-
-        with tempfile.TemporaryDirectory() as tmp:
-            local = Path(tmp) / name
-            s3.download_file(bucket, key, str(local))
-            reference, about = fetch_reference(Path(tmp))
-            report = check_file(local, reference)
-        if "drift" in report:
-            report["drift"]["reference"] = about
-        elif report["status"] in ("passed", "failed"):
-            report["drift"] = {"status": "skipped", **about}
+        web = key.startswith(WEB_PREFIX)
+        report_key = report_key_for(key)
+        try:
+            report = check_object(bucket, key)
+        except Exception as err:
+            # The message is never logged or kept: it may quote a value from the file
+            failure = type(err).__name__
+            s3.put_object(Bucket=bucket, Key=report_key, ContentType="application/json",
+                          Body=json.dumps({"file": name, "status": "error", "reason": f"check failed ({failure})",
+                                           "source_key": key}).encode())
+            print(json.dumps({"file": name, "status": "error", "error": failure, "report": report_key}))
+            raise CheckFailed(f"data check failed ({failure})") from None   # Lambda retries; alarm fires
+        finally:
+            if web:
+                s3.delete_object(Bucket=bucket, Key=key)   # nothing needs a website upload once it's checked
+        if report is None:
+            print(json.dumps({"file": name, "status": "gone"}))
+            results.append({"key": key, "status": "gone"})
+            continue
         report["source_key"] = key
 
-        report_key = f"{REPORT_PREFIX}{name}.json"
         s3.put_object(Bucket=bucket, Key=report_key, Body=json.dumps(report, indent=2).encode(),
                       ContentType="application/json")
-        if TOPIC_ARN:
+        if TOPIC_ARN and (not web or report["status"] == "rejected"):
             subject, body = summary(report)
             sns.publish(TopicArn=TOPIC_ARN, Subject=subject, Message=f"{body}\n\nFull report: s3://{bucket}/{report_key}")
 

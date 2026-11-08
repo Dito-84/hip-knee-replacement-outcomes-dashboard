@@ -77,7 +77,8 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `outcomes/load.py` | Reads CSV or Excel, finds the header row, cleans dates and Yes/No fields |
 | `outcomes/metrics.py` | Collapses records to stays and computes every measure for each filter combination |
 | `outcomes/stats.py` | Statistical helpers: Wilson and Poisson intervals, odds ratios, Mantel-Haenszel |
-| `outcomes/synthetic.py` | Generates the synthetic dataset (seeded, reproducible) |
+| `outcomes/synthetic.py` | Generates the synthetic dataset (seeded, reproducible), with a `Synthetic Marker` column on every row |
+| `outcomes/synthetic_guard.py` | Refuses files that aren't marked synthetic data: used by CI and the AWS data check |
 | `dashboard/template.html` | The dashboard page (Plotly.js), filled with precomputed data at build time |
 | `build.py` | Builds a single self-contained `index.html` |
 | `tests/` | pytest suite, one file per area: loading, measures, original-formula errors, comparisons, statistics (including simulated interval coverage), suppression, build, synthetic data, quality checks |
@@ -86,7 +87,7 @@ The rates are observed, not risk-standardized like the published CMS RSCR, which
 | `docs/glossary.md` | Plain-language definitions of every term on the dashboard |
 | `outcomes/suppression.py` | Optional small-cell suppression (counts of 1 to 10) for builds that will be shared |
 | `outcomes/quality.py`, `scripts/check_data.py` | Data-quality checks to run on a real export before building |
-| `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed |
+| `scripts/check_no_real_data.py` | CI check that fails if any spreadsheet or non-synthetic data file is committed, or any CSV lacks the synthetic marker |
 | `scripts/check_cdn_integrity.py` | CI check that the chart library on the CDN still matches the integrity hash in the page |
 | `infra/` | AWS hosting as code: S3 + CloudFront site, GitHub OIDC deploy role, data-check Lambda ([details](infra/README.md)) |
 

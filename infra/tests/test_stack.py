@@ -267,7 +267,8 @@ def test_alarms_email_on_errors_and_on_given_up_uploads(template):
     # 6 alarms, inside CloudWatch's free 10
     assert len(alarms) == 6
     metrics = sorted(a["Properties"]["MetricName"] for a in alarms.values())
-    assert metrics == ["5xx", "ApproximateNumberOfMessagesVisible", "Errors", "Errors", "Errors", "Errors"]
+    assert metrics == ["5xx", "ApproximateNumberOfMessagesVisible", "Errors", "Errors", "Errors",
+                       "PreAuthUnexpectedErrors"]
     for props in alarms.values():
         props = props["Properties"]
         assert props["AlarmActions"] == [{"Ref": topic}]
@@ -382,8 +383,10 @@ def test_app_client_is_a_public_pkce_client_with_short_tokens(template):
     assert (client["AccessTokenValidity"], client["IdTokenValidity"], client["RefreshTokenValidity"]) == (30, 30, 60)
     assert client["TokenValidityUnits"] == {"AccessToken": "minutes", "IdToken": "minutes", "RefreshToken": "minutes"}
     assert client["EnableTokenRevocation"] is True and client["PreventUserExistenceErrors"] == "ENABLED"
-    # Only the admin flow (smoke test; needs IAM credentials) besides OAuth: no password or SRP sign-in
-    assert set(client["ExplicitAuthFlows"]) == {"ALLOW_ADMIN_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"}
+    # SRP for managed login (without it every code exchange failed with invalid_grant), the admin flow for
+    # the smoke test (needs IAM credentials), refresh. No plain-password or custom flows.
+    assert set(client["ExplicitAuthFlows"]) == {"ALLOW_USER_SRP_AUTH", "ALLOW_ADMIN_USER_PASSWORD_AUTH",
+                                                "ALLOW_REFRESH_TOKEN_AUTH"}
     for urls in (client["CallbackURLs"], client["LogoutURLs"]):
         [url] = urls
         assert url["Fn::Join"][1][-1] == "/upload.html"
@@ -487,3 +490,14 @@ def test_upload_limits_table(template):
 def test_upload_page_outputs(template):
     outputs = template.to_json()["Outputs"]
     assert {"UploadPageUrl", "UploadApiUrl", "UserPoolId", "UserPoolClientId", "AuthDomain"} <= set(outputs)
+
+
+def test_refusing_an_expired_account_doesnt_set_off_the_crash_alarm(template):
+    """Cognito refuses a sign-in only through an exception, which Lambda counts as an error; the alarm
+    counts logged errors other than AccountExpired instead (it emailed on the first smoke test)."""
+    [mf] = template.find_resources("AWS::Logs::MetricFilter").values()
+    props = mf["Properties"]
+    assert props["FilterPattern"] == '"[ERROR]" -AccountExpired'
+    assert "PreAuthFunctionLogs" in str(props["LogGroupName"])
+    [transform] = props["MetricTransformations"]
+    assert transform["MetricName"] == "PreAuthUnexpectedErrors" and transform["MetricValue"] == "1"

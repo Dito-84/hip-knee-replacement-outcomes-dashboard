@@ -38,8 +38,9 @@ def add_suppressions(stack: Stack) -> None:
         NagPackSuppression(
             id="AwsSolutions-IAM5",
             applies_to=[f"Resource::<{intake}.Arn>/incoming/*", f"Resource::<{intake}.Arn>/reports/*"],
-            reason="File names aren't known in advance, so access is scoped by prefix: read-only under "
-                   "incoming/, write-only under reports/."),
+            reason="File names aren't known in advance, so access is scoped by prefix: read and delete "
+                   "under incoming/ (rejected files and checked website uploads are deleted), write-only "
+                   "under reports/."),
     ], apply_to_children=True)
 
     NagSuppressions.add_resource_suppressions(stack.failed_checks, [

@@ -45,14 +45,21 @@ class FakeS3:
     def __init__(self):
         self.objects = {}
         self.writes = []
+        self.deletes = []
 
     def download_file(self, bucket, key, filename):
+        if (bucket, key) not in self.objects:
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         Path(filename).write_bytes(self.objects[(bucket, key)])
 
     def get_object(self, Bucket, Key, **_):
         if (Bucket, Key) not in self.objects:
             raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject")
         return {"Body": io.BytesIO(self.objects[(Bucket, Key)]), "VersionId": "v1"}
+
+    def delete_object(self, Bucket, Key, **_):
+        self.deletes.append((Bucket, Key))
+        self.objects.pop((Bucket, Key), None)   # like S3, deleting a missing key succeeds
 
     def put_object(self, Bucket, Key, Body, **_):
         self.writes.append((Bucket, Key))
@@ -131,18 +138,21 @@ def test_report_and_notification_contain_no_record_values(handler, tmp_path):
     assert leaked == []
 
 
-def drifted_copy(tmp_path):
+def drifted_copy(tmp_path, relabel_hospital=True):
     """The synthetic file with four kinds of drift, each one a known answer.
 
     - counts sent as Yes/No instead of 0/1/2 (a coding change: number → text; load() would read them as 0)
-    - "Hospital A" relabelled "Hosp. A" (16% of stays arrive under a name the reference never had)
+    - "Hospital A" relabelled "Hosp. A" (16% of stays arrive under a name the reference never had).
+      The synthetic-only guard rejects that file, since "Hosp. A" isn't a fictional hospital, so
+      uploads through the handler use relabel_hospital=False
     - a new Measure code on 10% of rows
     - "Excluded (Yes/No)" left blank on 20% of rows (it is never blank in the reference)
     """
     raw = pd.read_csv(SYNTHETIC, dtype=object, keep_default_na=False)
     tka = [c for c in raw.columns if c.startswith("Number of TKAs")][0]
     raw[tka] = raw[tka].map({"0": "No", "1": "Yes", "2": "Yes"})
-    raw["Hospital"] = raw["Hospital"].replace("Hospital A", "Hosp. A")
+    if relabel_hospital:
+        raw["Hospital"] = raw["Hospital"].replace("Hospital A", "Hosp. A")
     every_tenth = raw.index % 10 == 0
     raw.loc[every_tenth, "Measure"] = "THA/TKA Readmission"
     raw.loc[raw.index % 5 == 1, "Excluded (Yes/No)"] = ""
@@ -160,8 +170,16 @@ def stable_copy(tmp_path, seed, n_stays):
     return path
 
 
+def test_drift_finds_a_relabelled_hospital(handler, tmp_path):
+    """Checked directly: through the handler the guard rejects this file before drift is reached."""
+    report = handler.check_file(drifted_copy(tmp_path), SYNTHETIC)
+    reasons = {a["column"]: " ".join(a["reasons"]) for a in report["drift"]["alerts"]}
+    assert set(reasons) == {"n_tka", "hospital", "measure", "excluded"}
+    assert "1 new value(s)" in reasons["hospital"]
+
+
 def test_drifted_batch_alerts_with_counts_only(handler, tmp_path):
-    path = drifted_copy(tmp_path)
+    path = drifted_copy(tmp_path, relabel_hospital=False)
     handler.s3.objects[("intake", "incoming/drifted.csv")] = path.read_bytes()
     handler.handler(s3_event("intake", "incoming/drifted.csv"), None)
 
@@ -170,19 +188,18 @@ def test_drifted_batch_alerts_with_counts_only(handler, tmp_path):
     assert drift["status"] == "alert"
     assert drift["reference"] == {"key": "reference/discharges.csv", "version_id": "v1"}
     reasons = {a["column"]: " ".join(a["reasons"]) for a in drift["alerts"]}
-    assert set(reasons) == {"n_tka", "hospital", "measure", "excluded"}
+    assert set(reasons) == {"n_tka", "measure", "excluded"}
     assert "type changed (number → category)" in reasons["n_tka"]
-    assert "1 new value(s)" in reasons["hospital"]
     assert "1 new value(s)" in reasons["measure"]
     assert "blanks 0.0% → 20.0%" in reasons["excluded"]
 
     [message] = handler.sns.messages
     assert message["Subject"].startswith("Data check") and "DRIFT" in message["Subject"]
-    assert "[DRIFT] hospital:" in message["Message"]
+    assert "[DRIFT] measure:" in message["Message"]
 
     # Nothing from the records leaves the function: not the new labels, not any other value
     outgoing = handler.s3.objects[("intake", "reports/drifted.csv.json")].decode() + json.dumps(handler.sns.messages)
-    for value in ("Hosp. A", "Hospital A", "Readmission", "THA/TKA"):
+    for value in ("Hospital A", "Readmission", "THA/TKA"):
         assert value not in outgoing
     raw = pd.read_csv(path, dtype=object, keep_default_na=False)
     values = {v for col in raw.columns for v in raw[col].unique() if len(str(v)) >= 6}
@@ -206,7 +223,7 @@ def test_stable_batch_does_not_alert(handler, tmp_path, seed, n_stays):
 def test_upload_never_overwrites_the_reference(handler, tmp_path):
     """Uploads, even one named like the reference, leave it byte-for-byte unchanged."""
     before = handler.s3.objects[REFERENCE]
-    drifted = drifted_copy(tmp_path).read_bytes()
+    drifted = drifted_copy(tmp_path, relabel_hospital=False).read_bytes()
     for key in ("incoming/drifted.csv", "incoming/reference/discharges.csv", "incoming/discharges.csv"):
         handler.s3.objects[("intake", key)] = drifted
         handler.handler(s3_event("intake", key), None)
@@ -306,3 +323,103 @@ def test_bundled_package_runs_on_its_own(tmp_path):
     report = json.loads(run.stdout.strip().splitlines()[-1])
     assert report["status"] in ("passed", "failed")
     assert report["drift"]["status"] == "alert"   # dstoolkit and SciPy work from the package alone
+
+
+# ---------- Synthetic-only guard, website uploads and safe failure ----------
+
+WEB_KEY = "incoming/web/user-1/0b7e3f1c-0000-4000-8000-000000000001.csv"
+WEB_REPORT = "reports/web/user-1/0b7e3f1c-0000-4000-8000-000000000001.csv.json"
+REAL_LOOKING = "Hospital,Measure\nSt. Example Medical Center,THA/TKA Complication\n"   # made up; no marker
+
+
+def small_batch(tmp_path, n_stays=60, seed=11):
+    from outcomes.synthetic import generate
+
+    path = tmp_path / "small.csv"
+    generate(n_stays=n_stays, seed=seed).to_csv(path, index=False)
+    return path.read_bytes()
+
+
+def test_web_upload_is_checked_reported_per_user_and_deleted(handler, tmp_path):
+    handler.s3.objects[("intake", WEB_KEY)] = small_batch(tmp_path)
+    result = handler.handler(s3_event("intake", WEB_KEY), None)
+
+    assert result["checked"][0]["status"] in ("passed", "failed")
+    report = json.loads(handler.s3.objects[("intake", WEB_REPORT)])
+    assert report["source_key"] == WEB_KEY and report["records"] > 0
+    assert ("intake", WEB_KEY) not in handler.s3.objects        # nothing needs it once checked
+    assert handler.sns.messages == []                            # the page shows the result instead
+
+
+def test_same_file_name_from_two_users_gets_two_reports(handler, tmp_path):
+    data = small_batch(tmp_path)
+    for user in ("user-1", "user-2"):
+        handler.s3.objects[("intake", f"incoming/web/{user}/batch.csv")] = data
+        handler.handler(s3_event("intake", f"incoming/web/{user}/batch.csv"), None)
+    assert ("intake", "reports/web/user-1/batch.csv.json") in handler.s3.objects
+    assert ("intake", "reports/web/user-2/batch.csv.json") in handler.s3.objects
+
+
+@pytest.mark.parametrize("key", [WEB_KEY, "incoming/discharges.csv"])
+def test_file_without_the_marker_is_rejected_deleted_and_emailed(handler, key):
+    """Website and command-line uploads alike: the guard covers everything in incoming/."""
+    handler.s3.objects[("intake", key)] = REAL_LOOKING.encode()
+    result = handler.handler(s3_event("intake", key), None)
+
+    assert result["checked"][0]["status"] == "rejected"
+    assert ("intake", key) not in handler.s3.objects
+    report = json.loads(handler.s3.objects[("intake", handler.report_key_for(key))])
+    assert report["reason"] == "not a synthetic file: no synthetic marker column" and report["deleted"]
+    assert "records" not in report and "drift" not in report     # rejected files are never checked
+    [message] = handler.sns.messages
+    assert message["Subject"].startswith("Data check REJECTED")
+    outgoing = json.dumps(report) + json.dumps(handler.sns.messages)
+    assert "Example" not in outgoing and "THA/TKA" not in outgoing
+
+
+def test_excel_files_are_rejected_and_deleted(handler):
+    key = "incoming/discharges.xlsx"
+    handler.s3.objects[("intake", key)] = b"PK\x03\x04 not really a workbook"
+    assert handler.handler(s3_event("intake", key), None)["checked"][0]["status"] == "rejected"
+    assert ("intake", key) not in handler.s3.objects
+
+
+def test_an_unexpected_error_reports_and_logs_its_type_only(handler, tmp_path, monkeypatch, capsys):
+    secret = "07/04/1952 Hospital B"   # an exception message that quotes values from the file
+
+    def boom(_records):
+        raise ValueError(secret)
+    monkeypatch.setattr(handler, "run_checks", boom)
+    handler.s3.objects[("intake", WEB_KEY)] = small_batch(tmp_path)
+
+    with pytest.raises(handler.CheckFailed) as caught:
+        handler.handler(s3_event("intake", WEB_KEY), None)
+    assert str(caught.value) == "data check failed (ValueError)"
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__   # original not chained
+    report = json.loads(handler.s3.objects[("intake", WEB_REPORT)])
+    assert report["status"] == "error" and report["reason"] == "check failed (ValueError)"
+    assert ("intake", WEB_KEY) not in handler.s3.objects        # deleted even though the check crashed
+    logged = capsys.readouterr().out
+    assert secret not in logged and secret not in json.dumps(report) and "1952" not in logged
+
+    # Lambda's retry then finds nothing to do, and keeps the error report
+    result = handler.handler(s3_event("intake", WEB_KEY), None)
+    assert result["checked"] == [{"key": WEB_KEY, "status": "gone"}]
+    assert json.loads(handler.s3.objects[("intake", WEB_REPORT)])["status"] == "error"
+
+
+def test_command_line_upload_is_kept_after_an_error_so_the_retry_can_check_it(handler, tmp_path, monkeypatch):
+    monkeypatch.setattr(handler, "run_checks", lambda _r: (_ for _ in ()).throw(KeyError("x")))
+    key = "incoming/batch.csv"
+    handler.s3.objects[("intake", key)] = small_batch(tmp_path)
+    with pytest.raises(handler.CheckFailed):
+        handler.handler(s3_event("intake", key), None)
+    assert ("intake", key) in handler.s3.objects                # the 7-day lifecycle rule removes it
+
+
+def test_function_never_deletes_outside_incoming(handler, tmp_path):
+    handler.s3.objects[("intake", WEB_KEY)] = small_batch(tmp_path)
+    handler.s3.objects[("intake", "incoming/bad.csv")] = REAL_LOOKING.encode()
+    for key in (WEB_KEY, "incoming/bad.csv"):
+        handler.handler(s3_event("intake", key), None)
+    assert handler.s3.deletes and all(k.startswith("incoming/") for _, k in handler.s3.deletes)

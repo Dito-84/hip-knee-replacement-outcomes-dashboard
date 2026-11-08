@@ -1,12 +1,17 @@
 """Fail if anything that could contain real patient data is tracked by git.
 
 Runs in CI on every push and pull request. Allowed data: the synthetic CSV
-in data/ (which must match what the generator produces; see tests).
+in data/ (which must match what the generator produces; see tests). Every
+tracked CSV, wherever it is, must also pass the synthetic-only guard
+(outcomes/synthetic_guard.py): marker column on every row, fictional hospitals only.
 """
 
 import subprocess
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from outcomes import synthetic_guard  # noqa: E402  (standard library only, so this runs before pip install)
 
 ALLOWED_DATA = {"data/synthetic_discharges.csv"}
 BLOCKED_SUFFIXES = {".xlsx", ".xls", ".xlsm", ".qvf", ".qvd", ".sav", ".sas7bdat", ".parquet", ".feather"}
@@ -24,6 +29,10 @@ def main():
             problems.append(f"{f}: spreadsheet/data exports are not allowed in this repo")
         elif path.suffix.lower() in DATA_SUFFIXES and path.parts[0] == "data" and f not in ALLOWED_DATA:
             problems.append(f"{f}: only the synthetic dataset may live in data/")
+        if path.suffix.lower() == ".csv" and Path(f).is_file():
+            reason = synthetic_guard.check(f)
+            if reason:
+                problems.append(f"{f}: fails the synthetic-only guard ({reason})")
     if problems:
         print("Possible real data found in the repository:\n  " + "\n  ".join(problems))
         sys.exit(1)

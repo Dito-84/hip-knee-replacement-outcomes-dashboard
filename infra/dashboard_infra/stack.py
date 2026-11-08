@@ -150,7 +150,13 @@ class DashboardStack(Stack):
                 # Uploaded files are deleted after a week; reports kept for 90 days
                 s3.LifecycleRule(prefix="incoming/", expiration=Duration.days(7)),
                 s3.LifecycleRule(prefix="reports/", expiration=Duration.days(90)),
+                # Website uploads are deleted by the check itself; this is the backstop if it
+                # never finishes. Their counts-only results are only needed for a week.
+                s3.LifecycleRule(prefix="incoming/web/", expiration=Duration.days(1)),
+                s3.LifecycleRule(prefix="reports/web/", expiration=Duration.days(7)),
             ],
+            # Deliberately NOT versioned: in a versioned bucket a delete only adds a delete
+            # marker, so a rejected file would still be stored. A test enforces this.
         )
 
         # The snapshot new uploads are compared with for drift. Its own bucket, so the
@@ -212,7 +218,7 @@ class DashboardStack(Stack):
 
         self.data_check = lambda_.Function(
             self, "DataCheckFunction",
-            description="Runs the dashboard's data-quality checks on files uploaded to incoming/",
+            description="Rejects non-synthetic files, then runs the data-quality checks on files uploaded to incoming/",
             runtime=RUNTIME,
             architecture=ARCHITECTURE,   # Graviton: about 20% cheaper than x86 for the same work
             handler="handler.handler",
@@ -232,6 +238,10 @@ class DashboardStack(Stack):
         # Read uploads, write reports, read the reference, publish results; nothing else
         fn_role.add_to_policy(iam.PolicyStatement(
             sid="ReadUploads", actions=["s3:GetObject"],
+            resources=[self.intake_bucket.arn_for_objects("incoming/*")]))
+        # Delete rejected files, and website uploads once checked. Uploads only: not reports/
+        fn_role.add_to_policy(iam.PolicyStatement(
+            sid="DeleteUploads", actions=["s3:DeleteObject"],
             resources=[self.intake_bucket.arn_for_objects("incoming/*")]))
         fn_role.add_to_policy(iam.PolicyStatement(
             sid="WriteReports", actions=["s3:PutObject"],

@@ -3,7 +3,7 @@
 Infrastructure as code (AWS CDK, Python) that runs the dashboard on AWS:
 
 - **Website:** S3 and CloudFront host the dashboard. GitHub Actions deploys it by signing in to AWS through OIDC, so no AWS keys are stored anywhere.
-- **Data check:** uploading a discharge file to S3 triggers a Lambda function. It runs the same [data-quality checks](../outcomes/quality.py) as `scripts/check_data.py`, compares the file with a reference snapshot for **drift**, and emails the result.
+- **Data check:** uploading a discharge file to S3 triggers a Lambda function. It first refuses anything that isn't this project's synthetic data (the **synthetic-only guard**), then runs the same [data-quality checks](../outcomes/quality.py) as `scripts/check_data.py`, compares the file with a reference snapshot for **drift**, and emails the result.
 
 The GitHub Pages site keeps working on its own. This is a second, independent way to host the dashboard.
 
@@ -21,9 +21,10 @@ flowchart LR
     viewer([Visitor]) -- HTTPS --> cf[CloudFront<br/>security headers]
     cf -- "Origin Access Control" --> site
 
-    analyst([Analyst]) -- "upload to incoming/" --> intake[(S3 intake bucket<br/>private, files expire after 7 days)]
-    intake -- "ObjectCreated event" --> fn[Lambda<br/>data check, ARM64]
+    analyst([Analyst]) -- "upload to incoming/" --> intake[(S3 intake bucket<br/>private, not versioned,<br/>files expire after 7 days)]
+    intake -- "ObjectCreated event" --> fn[Lambda<br/>synthetic-only guard,<br/>then data check, ARM64]
     fn -- "report JSON to reports/" --> intake
+    fn -- "delete rejected files" --> intake
     fn -- "summary (counts only)" --> sns[SNS topic] --> email([Email])
     ref[(S3 reference bucket<br/>private, versioned)] -- "read one object<br/>(no write access)" --> fn
     fn -. "failed after 2 retries" .-> dlq[(SQS dead-letter queue<br/>14 days)]
@@ -59,6 +60,30 @@ The p-value condition is there because "any major status alerts" would email on 
 
 **Packaging.** SciPy (for the p-values) takes the package from 81 MB to 183 MB unzipped, inside Lambda's 250 MB limit, which covers the function and its layers together. A layer wouldn't raise it. dstoolkit's plotting library, matplotlib, would have pushed it to 259 MB. Since 0.15.1, dstoolkit imports matplotlib only when it draws, so it's installed from PyPI (`pandas-dstoolkit==0.15.2`, pinned by SHA-256) with `--no-deps`, and matplotlib is left out. A container image (up to 10 GB) was the alternative. It was rejected because it would add Docker to every deploy, and on an Intel Mac it would build the ARM64 image under emulation. If the function ever needs much more (scikit-learn to score a model, say), a container image built by GitHub Actions on an ARM64 runner is the next step.
 
+## Synthetic-only guard
+
+Real patient data must never be uploaded. That is a rule for people, and the guard is the safety net for the realistic accident: picking the real discharge export instead of the synthetic file.
+
+**How it works.** The synthetic generator adds a `Synthetic Marker` column with one fixed value on every row. Before anything else, the function screens each upload with [`outcomes/synthetic_guard.py`](../outcomes/synthetic_guard.py). A file is refused if:
+
+- it isn't a `.csv`. Synthetic data is always CSV, and Excel is the format the real export arrives in, so Excel files are no longer accepted in the intake bucket;
+- it isn't UTF-8 text, or doesn't parse as CSV;
+- the first row has no marker column (the real export has none, and has preamble rows above its headers);
+- any row lacks the exact marker value;
+- any row names a hospital other than the generator's three fictional ones.
+
+A refused file is **deleted at once**, never loaded or checked, and its report says only `rejected: not a synthetic file: <reason>`. The reasons are fixed strings, so no value from the file is ever repeated. Every rejection is emailed, because it's the case you'd need to know about. The guard covers everything under `incoming/`, including your own command-line uploads. CI runs the same guard over every committed CSV (`scripts/check_no_real_data.py`).
+
+**Why the screen doesn't use pandas.** The guard reads only the header and two columns, with Python's `csv` module, before pandas ever touches the file. It also has no dependencies, so CI can run it before installing anything.
+
+**What it can't do.** It's not proof that a file is synthetic. Anyone can add the column to a real file on purpose. It reliably catches the accident, which is the risk that matters for a solo portfolio stack.
+
+**Why the bucket is not versioned.** In a versioned bucket a delete only adds a delete marker, and the refused file would still be stored as a noncurrent version. A test fails if versioning is ever turned on.
+
+**Failing safely.** An exception's message can quote a cell ("could not convert 'Hospital B'..."). So an unexpected error is logged, written to the report and re-raised **by its type only** (`data check failed (ValueError)`), with the original exception unchained so the Lambda runtime doesn't print it either. The error still counts as a Lambda error, so the `DataCheckErrors` alarm fires and Lambda retries as before.
+
+**Website uploads** (`incoming/web/<user>/<id>.csv`, added with the upload page) are deleted as soon as they've been checked, whatever the result. Nothing needs them afterwards, so the file never sits in the bucket. The delete happens in a `finally` block, so a crash doesn't skip it, and a retry then finds nothing and keeps the error report. A 1-day lifecycle rule is the backstop for a check that never finishes (a timeout). Their counts-only reports go to `reports/web/<user>/<id>.csv.json` for 7 days, and they aren't emailed unless rejected: the page shows the result instead. Reports are now named after the full path under `incoming/`, so two users' files with the same name never collide.
+
 ## Design decisions
 
 These are grouped by the four areas of the AWS Well-Architected Framework, which are also the four domains of the Solutions Architect – Associate exam.
@@ -69,9 +94,10 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
 - GitHub signs in to AWS through **OIDC**, so there are no long-lived access keys to leak or rotate. Only the `main` branch of this repository can assume the deploy role, and only for one hour at a time.
 - **Least privilege, written out by hand:**
   - The deploy role can list, upload and delete files in the site bucket and clear the CloudFront cache. Nothing else.
-  - The Lambda can read `incoming/`, write `reports/`, read the single reference object, publish to its topic and write its own logs. It uses no AWS managed policies.
+  - The Lambda can read and delete under `incoming/` (rejected files, and website uploads once checked), write `reports/`, read the single reference object, publish to its topic and write its own logs. It can't delete anything outside `incoming/`. It uses no AWS managed policies.
 - **Automated security review:** [cdk-nag](https://github.com/cdklabs/cdk-nag) runs the AWS Solutions rule pack on every synth and in CI. The few rules that don't apply are documented with reasons in [`nag.py`](dashboard_infra/nag.py). Any other finding fails the build.
-- The data check's reports and emails contain only counts, column names and check names, never values from the file. Tests check this, including for a drifted file with relabelled and new values.
+- The data check's reports and emails contain only counts, column names and check names, never values from the file. Tests check this, including for a drifted file with relabelled and new values, a refused file, and a crash whose error message quotes values.
+- The **synthetic-only guard** refuses and deletes anything that isn't marked synthetic data (see above).
 - The alert topic is encrypted with a **customer managed KMS key**, rotated yearly. The AWS managed `alias/aws/sns` key can't be used here, because CloudWatch alarms can't publish to a topic encrypted with it and its policy can't be edited. The key policy lets CloudWatch use the key only for this account, and the topic policy accepts alarm messages only from this stack's two alarms.
 - Failure alerts come from CloudWatch alarms, not from Lambda's failure records. Those records include the error message and could hold a value from the file; an alarm email says only which alarm fired.
 - **The page itself** carries a Content-Security-Policy (built into the HTML, so the GitHub Pages copy has it too). It allows only the page's own script, by hash, and the chart library from jsDelivr, pinned by a subresource-integrity hash that CI checks against the CDN. A tampered library or an injected script won't run.
@@ -89,7 +115,7 @@ These are grouped by the four areas of the AWS Well-Architected Framework, which
 
 **Cost-effective**
 - CloudFront uses the cheapest price class (North America and Europe edge locations).
-- Lifecycle rules expire uploads after 7 days, reports and logs after 90, and old site versions after 30.
+- Lifecycle rules expire uploads after 7 days (website uploads after 1, as a backstop), reports and logs after 90 (website results after 7), and old site versions after 30.
 - ARM64 Lambda costs about 20% less than x86 for the same work.
 - AWS WAF was left out on purpose: the site is static, with nothing to log in to or submit, and WAF would cost more than everything else combined.
 - An optional **AWS Budget** emails you before monthly spend passes $5.
@@ -148,7 +174,7 @@ You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and
 
    - Then go to **Actions → Deploy to AWS → Run workflow**. After that, every push to `main` deploys automatically.
    - The site is at the `SiteUrl` output.
-6. **Publish the drift reference** (once, and again only when you decide the synthetic dataset should be the new normal):
+6. **Publish the drift reference** (once, and again only when you decide the synthetic dataset should be the new normal, or when its columns change, as they did when the marker column was added):
    ```bash
    python ../scripts/publish_reference.py --bucket <ReferenceBucketName> --dry-run   # check, then run without --dry-run
    ```
@@ -162,6 +188,12 @@ You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and
    aws s3 cp ../data/synthetic_discharges.csv s3://<IntakeBucketName>/incoming/
    # a few seconds later you'll get an email; the full report is here:
    aws s3 cp s3://<IntakeBucketName>/reports/synthetic_discharges.csv.json -
+   ```
+   To see the guard refuse a file, upload any CSV without the marker column. It's reported as `rejected` and deleted:
+   ```bash
+   printf 'Hospital,Measure\nHospital A,x\n' > /tmp/no-marker.csv
+   aws s3 cp /tmp/no-marker.csv s3://<IntakeBucketName>/incoming/
+   aws s3 ls s3://<IntakeBucketName>/incoming/no-marker.csv   # nothing: already deleted
    ```
 
 ### Redeploying after changes
@@ -203,7 +235,8 @@ CI runs all three on every pull request. None of them needs an AWS account.
 | `dashboard_infra/stack.py` | Buckets (including the drift reference), CloudFront, OIDC deploy role, Lambda with its dead-letter queue and alarms, SNS with its key, budget |
 | `dashboard_infra/bundling.py` | Builds the Lambda package: pip downloads pandas, NumPy and SciPy for Linux ARM64, so no Docker is needed; dstoolkit is added without matplotlib |
 | `dashboard_infra/nag.py` | The documented exceptions to the cdk-nag security rules |
-| `lambda/data_check/handler.py` | The data-check function; it reuses the dashboard's `outcomes` package |
+| `lambda/data_check/handler.py` | The data-check function: synthetic-only guard first, then the checks; it reuses the dashboard's `outcomes` package |
+| `../outcomes/synthetic_guard.py` | The synthetic-only guard (standard library only), shared with CI's no-real-data check |
 | `lambda/data_check/drift.py`, `drift_policy.py` | The drift comparison (counts only) and the one place that decides what alerts |
 | `../scripts/publish_reference.py` | Publishes the committed synthetic dataset as the drift reference |
 | `../.github/workflows/deploy-aws.yml` | Builds the site and deploys it through OIDC |

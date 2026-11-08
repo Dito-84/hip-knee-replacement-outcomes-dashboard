@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from .schema import COLUMNS
+from .synthetic_guard import MARKER_COLUMN, MARKER_VALUE
 
 SEED = 2023
 START, END = pd.Timestamp("2018-01-01"), pd.Timestamp("2021-12-31")
@@ -189,7 +190,11 @@ def generate(n_stays=TOTAL_STAYS, seed=SEED):
     for col in ("beneficiary_dob", "admission_date", "discharge_date", "complication_admit_date", "death_date"):
         df[col] = pd.to_datetime(df[col]).dt.strftime("%m/%d/%Y")
     df = df.fillna("").sort_values("admission_date", key=pd.to_datetime, kind="stable")
-    return df.rename(columns={name: src for name, (src, _) in COLUMNS.items()})
+    df = df.rename(columns={name: src for name, (src, _) in COLUMNS.items()})
+    # Marks every row as synthetic. The data-check Lambda and CI refuse files without it
+    # (outcomes/synthetic_guard.py); the loader drops it like any unknown column.
+    df[MARKER_COLUMN] = MARKER_VALUE
+    return df
 
 
 def main():

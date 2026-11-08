@@ -187,9 +187,13 @@ def test_data_check_role_reads_uploads_and_writes_reports_only(template):  # and
     by_sid = {s.get("Sid"): s for s in stmts}
     assert by_sid["ReadUploads"]["Action"] == "s3:GetObject"
     assert by_sid["ReadUploads"]["Resource"]["Fn::Join"][1][-1] == "/incoming/*"
+    # It deletes rejected files and checked website uploads, and nothing outside incoming/
+    assert by_sid["DeleteUploads"]["Action"] == "s3:DeleteObject"
+    assert by_sid["DeleteUploads"]["Resource"]["Fn::Join"][1][-1] == "/incoming/*"
+    assert [s for s in stmts if "s3:DeleteObject" in str(s["Action"])] == [by_sid["DeleteUploads"]]
     assert by_sid["WriteReports"]["Action"] == "s3:PutObject"
     assert by_sid["WriteReports"]["Resource"]["Fn::Join"][1][-1] == "/reports/*"
-    assert actions(stmts) <= {"s3:GetObject", "s3:PutObject", "sns:Publish",
+    assert actions(stmts) <= {"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "sns:Publish",
                               "kms:Decrypt", "kms:GenerateDataKey",                     # the alert topic's key
                               "sqs:SendMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl",  # failed events
                               "logs:CreateLogStream", "logs:PutLogEvents"}
@@ -291,7 +295,15 @@ def test_uploads_and_reports_expire(template):
     template.has_resource_properties("AWS::S3::Bucket", {"LifecycleConfiguration": {"Rules": [
         Match.object_like({"Prefix": "incoming/", "ExpirationInDays": 7, "Status": "Enabled"}),
         Match.object_like({"Prefix": "reports/", "ExpirationInDays": 90, "Status": "Enabled"}),
+        Match.object_like({"Prefix": "incoming/web/", "ExpirationInDays": 1, "Status": "Enabled"}),
+        Match.object_like({"Prefix": "reports/web/", "ExpirationInDays": 7, "Status": "Enabled"}),
     ]}})
+
+
+def test_intake_bucket_is_not_versioned(template):
+    """A delete in a versioned bucket only adds a delete marker: a rejected file would still be stored."""
+    [intake] = [b for k, b in template.find_resources("AWS::S3::Bucket").items() if k.startswith("IntakeBucket")]
+    assert "VersioningConfiguration" not in intake["Properties"]
 
 
 def test_alert_topic_is_encrypted_and_email_is_optional(template):

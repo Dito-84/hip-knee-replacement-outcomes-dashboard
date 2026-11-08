@@ -145,7 +145,10 @@ async function finishSignIn(params) {
       redirect_uri: pageUrl, code_verifier: saved.verifier,
     }),
   });
-  if (!res.ok) throw new Error("Sign-in didn't complete.");
+  if (!res.ok) {
+    const code = (await res.json().catch(() => ({}))).error || res.status;   // Cognito's error code only
+    throw new Error(`Sign-in didn't complete (${code}).`);
+  }
   const tokens = await res.json();
   accessToken = tokens.access_token;
   // The refresh token is deliberately not kept: Cognito's expiry check runs only on a full sign-in

@@ -108,7 +108,10 @@ class Uploads(Construct):
             "WebClient",
             user_pool_client_name="upload-page",
             generate_secret=False,                            # a browser page can't keep a secret: PKCE instead
-            auth_flows=cognito.AuthFlow(admin_user_password=True),   # smoke test only; needs IAM credentials
+            # SRP: the password method managed login signs users in with, and Cognito's default. Without it,
+            # managed login accepted the password but every code exchange failed with invalid_grant.
+            # Admin password auth is for the smoke test only and needs IAM credentials.
+            auth_flows=cognito.AuthFlow(user_srp=True, admin_user_password=True),
             o_auth=cognito.OAuthSettings(
                 flows=cognito.OAuthFlows(authorization_code_grant=True),
                 scopes=[cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
@@ -217,8 +220,7 @@ class Uploads(Construct):
         self.alarms = [
             self._error_alarm("PresignErrors", self.presign, "The upload-signing function failed."),
             self._error_alarm("ResultsErrors", self.results, "The upload-results function failed."),
-            self._error_alarm("PreAuthErrors", self.pre_auth, "The sign-in expiry trigger crashed "
-                              "(expired sign-ins are refused normally and don't count)."),
+            self._pre_auth_crash_alarm(),
             cloudwatch.Alarm(
                 self, "ApiServerErrors",
                 alarm_description="The upload API returned 5xx errors.",
@@ -250,6 +252,28 @@ class Uploads(Construct):
             handler=handler, code=lambda_.Code.from_asset(str(LAMBDA_DIR / folder)),
             memory_size=256, timeout=Duration.seconds(10), role=role, log_group=log_group,
             environment=environment or {})
+
+    def _pre_auth_crash_alarm(self) -> cloudwatch.Alarm:
+        """Alarm when the expiry trigger crashes, but not when it refuses an expired account.
+
+        Cognito's only way to refuse a sign-in is an exception from the trigger, which Lambda counts
+        in its Errors metric, so an alarm on Errors would email on every expired sign-in. Instead a
+        metric filter counts logged errors other than AccountExpired.
+        """
+        metric_filter = self.pre_auth.log_group.add_metric_filter(
+            "UnexpectedErrors",
+            filter_pattern=logs.FilterPattern.literal('"[ERROR]" -AccountExpired'),
+            metric_namespace="HipKneeDashboard",
+            metric_name="PreAuthUnexpectedErrors",
+            metric_value="1",
+        )
+        return cloudwatch.Alarm(
+            self, "PreAuthErrors",
+            alarm_description="The sign-in expiry trigger crashed (refusing an expired account doesn't count).",
+            metric=metric_filter.metric(period=Duration.minutes(5), statistic="Sum"),
+            threshold=1, evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING)
 
     def _error_alarm(self, id: str, fn: lambda_.Function, description: str) -> cloudwatch.Alarm:
         return cloudwatch.Alarm(

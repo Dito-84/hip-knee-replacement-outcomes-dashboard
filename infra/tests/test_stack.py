@@ -356,14 +356,21 @@ def test_only_invited_users_can_sign_in(template):
     assert pool["UserPoolTier"] == "ESSENTIALS"
     assert pool["DeletionProtection"] == "ACTIVE"
     assert "PreAuthentication" in pool["LambdaConfig"]
+    # The expiry can't be changed after creation, by anyone
+    assert {"Name": "valid_until", "AttributeDataType": "String", "Mutable": False,
+            "StringAttributeConstraints": {"MinLength": "20", "MaxLength": "25"}} in pool["Schema"]
+    # The retired attribute stays (Cognito can't remove one), exactly as it was deployed
     assert {"Name": "expires_at", "AttributeDataType": "String", "Mutable": True,
             "StringAttributeConstraints": {"MinLength": "20", "MaxLength": "25"}} in pool["Schema"]
 
 
-def test_users_cant_write_any_attribute_so_cant_extend_their_expiry(template):
+def test_users_can_write_only_their_email(template):
+    """An explicit list. Cognito treats an empty WriteAttributes as unset: every attribute writable,
+    which scripts/smoke_upload.py caught on the first deploy. Custom attributes are never writable."""
     _, client = _one(template, "AWS::Cognito::UserPoolClient")
-    assert client["WriteAttributes"] == []
-    assert "custom:expires_at" in client["ReadAttributes"]
+    assert client["WriteAttributes"] == ["email"]
+    assert not [a for a in client["WriteAttributes"] if a.startswith("custom:")]
+    assert "custom:valid_until" in client["ReadAttributes"] and "custom:expires_at" not in client["ReadAttributes"]
 
 
 def test_app_client_is_a_public_pkce_client_with_short_tokens(template):

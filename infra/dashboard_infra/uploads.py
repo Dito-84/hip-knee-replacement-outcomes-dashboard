@@ -8,8 +8,9 @@ polls the API for the counts-only result.
 
 * Cognito user pool: no self sign-up, admin-created users only, optional TOTP MFA
   (no SMS), Essentials tier for managed login. A pre-authentication trigger refuses
-  sign-in after the account's custom:expires_at. The app client is public (PKCE, no
-  secret) and can't write any user attribute, so a user can't extend their own expiry.
+  sign-in after the account's custom:valid_until, which is immutable: set when the
+  account is created and never changeable after, by the user or anyone else. The app
+  client is public (PKCE, no secret) and can write only email.
 * HTTP API: a Cognito JWT authorizer on every route, CORS for the site's origin only,
   throttling, access logs. POST /uploads signs an upload; GET /uploads/{id} returns
   a result.
@@ -59,7 +60,7 @@ class Uploads(Construct):
         # ---------- Who can sign in ----------
         self.pre_auth = self._function(
             "PreAuthFunction", "pre_auth", "handler.handler",
-            "Refuses sign-in to demo accounts past their custom:expires_at")
+            "Refuses sign-in to demo accounts past their custom:valid_until")
 
         self.user_pool = cognito.UserPool(
             self, "UserPool",
@@ -68,7 +69,15 @@ class Uploads(Construct):
             sign_in_aliases=cognito.SignInAliases(email=True),
             standard_attributes=cognito.StandardAttributes(
                 email=cognito.StandardAttribute(required=True, mutable=True)),
-            custom_attributes={"expires_at": cognito.StringAttribute(min_len=20, max_len=25, mutable=True)},
+            custom_attributes={
+                # The account's end date. Immutable: only set at creation, so a signed-in user can't
+                # extend it with their own token (UpdateUserAttributes). To extend an account, recreate it.
+                "valid_until": cognito.StringAttribute(min_len=20, max_len=25, mutable=False),
+                # Retired (#33): the first expiry attribute was mutable, and an app client's empty
+                # write list turned out to mean "everything writable". Cognito can't remove or change
+                # a custom attribute, so it stays in the schema, unread and unwritable.
+                "expires_at": cognito.StringAttribute(min_len=20, max_len=25, mutable=True),
+            },
             mfa=cognito.Mfa.OPTIONAL,
             mfa_second_factor=cognito.MfaSecondFactor(otp=True, sms=False),   # no SMS: no cost, no sandbox
             password_policy=cognito.PasswordPolicy(
@@ -113,12 +122,11 @@ class Uploads(Construct):
             enable_token_revocation=True,
             prevent_user_existence_errors=True,
             read_attributes=cognito.ClientAttributes().with_standard_attributes(email=True)
-                                                       .with_custom_attributes("expires_at"),
-            write_attributes=cognito.ClientAttributes().with_standard_attributes(),   # none (see below)
+                                                       .with_custom_attributes("valid_until"),
+            # An explicit list: Cognito treats an empty WriteAttributes as unset, which makes every
+            # attribute writable (found by scripts/smoke_upload.py). Email is required, so it stays.
+            write_attributes=cognito.ClientAttributes().with_standard_attributes(email=True),
         )
-        # An empty WriteAttributes in CloudFormation can be read as "the default" (all writable);
-        # set it explicitly to an empty list on the resource so no attribute is user-writable
-        self.client.node.default_child.add_property_override("WriteAttributes", [])
         cognito.CfnManagedLoginBranding(
             self, "ManagedLoginStyle",
             user_pool_id=self.user_pool.user_pool_id,
@@ -195,7 +203,7 @@ class Uploads(Construct):
         stage.route_settings = {"POST /uploads": {"ThrottlingBurstLimit": 2, "ThrottlingRateLimit": 1}}
         # A stage's route settings must name a route that already exists, and CloudFormation
         # would otherwise create the stage first: make it wait for the route
-        stage.add_dependency(post_route.node.default_child)
+        stage.add_resource_dependency(post_route.node.default_child)
         stage.access_log_settings = apigw.CfnStage.AccessLogSettingsProperty(
             destination_arn=access_logs.log_group_arn,
             format=json.dumps({

@@ -11,12 +11,12 @@ then deletes it, whatever happens. It uses 3 of the day's uploads. Only syntheti
 sample batches are uploaded.
 
   1. the API refuses a request with no token (401)
-  2. the user can't change their own expiry date
+  2. the user can't change their own expiry date (or the retired expiry attribute)
   3. another (made-up) upload ID gives 404, not someone else's result
   4. S3 refuses a file over 5 MB
   5. a file without the synthetic marker is rejected, and deleted
   6. the clean sample passes, and is deleted
-  7. an expired account can't sign in
+  7. an expired account can't sign in (a second throwaway account, created expired)
 """
 
 import argparse
@@ -102,10 +102,20 @@ def main(argv=None):
     email = f"smoke-{secrets.token_hex(4)}@example.com"
     password = secrets.token_urlsafe(18) + "aA1!"
     soon = (datetime.now(UTC) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    cognito.admin_create_user(
-        UserPoolId=pool, Username=email, MessageAction="SUPPRESS",
-        UserAttributes=[{"Name": "email", "Value": email}, {"Name": "email_verified", "Value": "true"},
-                        {"Name": "custom:expires_at", "Value": soon}])
+    def create(address, valid_until):
+        cognito.admin_create_user(
+            UserPoolId=pool, Username=address, MessageAction="SUPPRESS",
+            UserAttributes=[{"Name": "email", "Value": address}, {"Name": "email_verified", "Value": "true"},
+                            {"Name": "custom:valid_until", "Value": valid_until}])
+        cognito.admin_set_user_password(UserPoolId=pool, Username=address, Password=password, Permanent=True)
+
+    def sign_in(address):
+        return cognito.admin_initiate_auth(
+            UserPoolId=pool, ClientId=client, AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+            AuthParameters={"USERNAME": address, "PASSWORD": password})["AuthenticationResult"]["AccessToken"]
+
+    expired_email = f"smoke-expired-{secrets.token_hex(4)}@example.com"
+    created = []
     passed = []
 
     def ok(step):
@@ -113,26 +123,23 @@ def main(argv=None):
         print(f"PASS  {step}")
 
     try:
-        cognito.admin_set_user_password(UserPoolId=pool, Username=email, Password=password, Permanent=True)
-
-        def sign_in():
-            return cognito.admin_initiate_auth(
-                UserPoolId=pool, ClientId=client, AuthFlow="ADMIN_USER_PASSWORD_AUTH",
-                AuthParameters={"USERNAME": email, "PASSWORD": password})["AuthenticationResult"]["AccessToken"]
-        token = sign_in()
+        created.append(email)
+        create(email, soon)
+        token = sign_in(email)
         sub = cognito.get_user(AccessToken=token)["Username"]
 
         status, _ = request("GET", f"{api}/uploads/{uuid.uuid4()}")
         assert status == 401, f"no token gave {status}"
         ok("1. no token: 401")
 
-        try:
-            cognito.update_user_attributes(
-                AccessToken=token, UserAttributes=[{"Name": "custom:expires_at", "Value": "2099-01-01T00:00:00Z"}])
-            raise AssertionError("the user could change their own expiry date")
-        except ClientError as err:
-            assert err.response["Error"]["Code"] in ("NotAuthorizedException", "InvalidParameterException"), err
-        ok("2. user can't change custom:expires_at")
+        for attribute in ("custom:valid_until", "custom:expires_at"):
+            try:
+                cognito.update_user_attributes(
+                    AccessToken=token, UserAttributes=[{"Name": attribute, "Value": "2099-01-01T00:00:00Z"}])
+                raise AssertionError(f"the user could change {attribute}")
+            except ClientError as err:
+                assert err.response["Error"]["Code"] in ("NotAuthorizedException", "InvalidParameterException"), err
+        ok("2. user can't change custom:valid_until (or the retired custom:expires_at)")
 
         status, _ = request("GET", f"{api}/uploads/{uuid.uuid4()}", token)
         assert status == 404, f"unknown upload ID gave {status}"
@@ -166,18 +173,18 @@ def main(argv=None):
         assert absent(f"incoming/web/{sub}/{upload_id}.csv"), "the checked file is still in the bucket"
         ok(f"6. clean sample: passed, {r['records']:,} records, drift {r['drift']['status']}; file deleted")
 
-        cognito.admin_update_user_attributes(
-            UserPoolId=pool, Username=email,
-            UserAttributes=[{"Name": "custom:expires_at", "Value": "2020-01-01T00:00:00Z"}])
+        created.append(expired_email)
+        create(expired_email, "2020-01-01T00:00:00Z")
         try:
-            sign_in()
+            sign_in(expired_email)
             raise AssertionError("an expired account signed in")
         except ClientError as err:
             assert err.response["Error"]["Code"] == "UserLambdaValidationException", err
         ok("7. expired account: sign-in refused")
     finally:
-        cognito.admin_delete_user(UserPoolId=pool, Username=email)
-        print(f"Deleted the throwaway account {email}")
+        for address in created:
+            cognito.admin_delete_user(UserPoolId=pool, Username=address)
+            print(f"Deleted the throwaway account {address}")
     print(f"\nAll {len(passed)} checks passed.")
 
 

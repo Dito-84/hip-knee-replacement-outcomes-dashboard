@@ -407,6 +407,14 @@ def test_api_cors_allows_only_the_site(template):
     assert set(cors["AllowMethods"]) == {"GET", "POST"}
 
 
+def test_stage_is_created_after_the_route_its_throttling_names(template):
+    """API Gateway refuses route settings for a route that doesn't exist yet (deploy of #31 failed on this)."""
+    [(stage_id, stage)] = template.find_resources("AWS::ApiGatewayV2::Stage").items()
+    [post] = [k for k, r in template.find_resources("AWS::ApiGatewayV2::Route").items()
+              if r["Properties"]["RouteKey"] == "POST /uploads"]
+    assert post in stage.get("DependsOn", [])
+
+
 def test_api_is_throttled_and_logged(template):
     _, stage = _one(template, "AWS::ApiGatewayV2::Stage")
     assert stage["DefaultRouteSettings"] == {"ThrottlingBurstLimit": 10, "ThrottlingRateLimit": 5}

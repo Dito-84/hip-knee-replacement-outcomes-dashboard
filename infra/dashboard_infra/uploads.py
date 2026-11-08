@@ -185,14 +185,17 @@ class Uploads(Construct):
             default_authorizer=HttpUserPoolAuthorizer(
                 "Cognito", self.user_pool, user_pool_clients=[self.client]),
         )
-        self.api.add_routes(path="/uploads", methods=[apigw.HttpMethod.POST],
-                            integration=HttpLambdaIntegration("PresignIntegration", self.presign))
+        [post_route] = self.api.add_routes(path="/uploads", methods=[apigw.HttpMethod.POST],
+                                           integration=HttpLambdaIntegration("PresignIntegration", self.presign))
         self.api.add_routes(path="/uploads/{id}", methods=[apigw.HttpMethod.GET],
                             integration=HttpLambdaIntegration("ResultsIntegration", self.results))
         stage: apigw.CfnStage = self.api.default_stage.node.default_child
         stage.default_route_settings = apigw.CfnStage.RouteSettingsProperty(
             throttling_burst_limit=10, throttling_rate_limit=5)
         stage.route_settings = {"POST /uploads": {"ThrottlingBurstLimit": 2, "ThrottlingRateLimit": 1}}
+        # A stage's route settings must name a route that already exists, and CloudFormation
+        # would otherwise create the stage first: make it wait for the route
+        stage.add_dependency(post_route.node.default_child)
         stage.access_log_settings = apigw.CfnStage.AccessLogSettingsProperty(
             destination_arn=access_logs.log_group_arn,
             format=json.dumps({

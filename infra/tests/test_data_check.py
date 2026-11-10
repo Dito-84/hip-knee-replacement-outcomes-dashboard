@@ -447,3 +447,5 @@ def test_each_sample_batch_gets_the_outcome_the_page_promises(handler, tmp_path,
         assert [f["check"] for f in report["findings"]] == ["discharge before admission"]
     if name == "drift":
         assert {a["column"] for a in report["drift"]["alerts"]} == {"n_tka", "measure", "excluded"}
+        # The quality checks see two of the three changes themselves: counts sent as Yes/No, and blank Excluded
+        assert {f["check"] for f in report["findings"]} == {"no procedure", "unreadable Yes/No"}

@@ -2,7 +2,7 @@
 
 Every value is randomly generated: no row corresponds to a real patient.
 Volumes and rates are set from published national patterns for Medicare
-hip and knee replacement (complication rate around 2.5%, typical length of
+hip and knee replacement (complication rate around 3%, typical length of
 stay falling from about 2 days in 2018 toward 1 day by 2021, an elective
 surgery pause in spring 2020) so the dashboard behaves realistically.
 

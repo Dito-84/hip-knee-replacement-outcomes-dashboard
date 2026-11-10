@@ -94,7 +94,10 @@ class Uploads(Construct):
                     "in. The temporary password expires in 7 days, and the account itself expires on the "
                     "date you were told. Only upload the synthetic sample files from that page."),
             ),
-            lambda_triggers=cognito.UserPoolTriggers(pre_authentication=self.pre_auth),
+            # Pre-authentication runs on sign-in only. Pre-token-generation also runs when a refresh token
+            # is used, so a refresh token captured from the token response can't outlive the account
+            lambda_triggers=cognito.UserPoolTriggers(pre_authentication=self.pre_auth,
+                                                     pre_token_generation=self.pre_auth),
             deletion_protection=True,
             removal_policy=RemovalPolicy.RETAIN,
         )

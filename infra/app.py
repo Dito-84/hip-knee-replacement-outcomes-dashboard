@@ -59,6 +59,7 @@ ci_stack = CiStack(
     github_branch=ctx("github_branch") or "main",
     github_owner_id=str(ctx("github_owner_id") or "") or None,
     github_repo_id=str(ctx("github_repo_id") or "") or None,
+    user_pool_id=ctx("user_pool_id"),   # the main stack's UserPoolId output (cdk.json)
     env=cdk.Environment(region=ctx("region") or "us-east-1"),
     description="Hip & knee replacement outcomes dashboard: GitHub OIDC roles for CI diffs, deploys and smoke tests",
     termination_protection=True,

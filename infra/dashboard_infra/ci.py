@@ -53,8 +53,11 @@ def oidc_subjects(repo: str, contexts: list[str], owner_id: str | None, repo_id:
 
 class CiStack(Stack):
     def __init__(self, scope: Construct, id: str, *, github_repo: str, github_branch: str = "main",
-                 github_owner_id: str | None = None, github_repo_id: str | None = None, **kwargs) -> None:
+                 github_owner_id: str | None = None, github_repo_id: str | None = None,
+                 user_pool_id: str, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
+        if not user_pool_id:
+            raise ValueError("user_pool_id is required: the Smoke role's Cognito actions are scoped to that one pool")
         account, region = self.account, self.region
         # The main stack created the account's GitHub OIDC provider; reference it by its fixed ARN
         provider = iam.OidcProviderNative.from_oidc_provider_arn(
@@ -107,7 +110,9 @@ class CiStack(Stack):
             sid="ThrowawayAccounts",
             actions=["cognito-idp:AdminCreateUser", "cognito-idp:AdminSetUserPassword",
                      "cognito-idp:AdminInitiateAuth", "cognito-idp:AdminDeleteUser"],
-            resources=[f"arn:aws:cognito-idp:{region}:{account}:userpool/*"]))
+            # This pool only: admin actions on any other pool in the account (including setting a
+            # password and signing in as its users) stay out of reach of a deploy job
+            resources=[f"arn:aws:cognito-idp:{region}:{account}:userpool/{user_pool_id}"]))
         intake = "arn:aws:s3:::hipkneedashboard-intakebucket*"
         # Checking a website upload was deleted: without ListBucket, S3 answers 403 instead of 404
         self.smoke_role.add_to_policy(iam.PolicyStatement(

@@ -53,7 +53,7 @@ Using an escape hatch means writing down why, in the pull request or the commit.
 - **Identity and access**
   - **No long-lived AWS keys exist.** GitHub signs in through OIDC, and each role's trust policy names the exact repository and context: `main`, pull requests, or the `production` environment.
   - **Every IAM role has its own policy, written out by hand.** No AWS managed policies, and wildcards appear only where an ARN ends in a generated ID, each documented in [`nag.py`](../infra/dashboard_infra/nag.py).
-  - **Reviewers never become AWS principals.** Cognito issues them JWTs that one API accepts. Accounts are created by me only, expire on an immutable date, and get 30-minute tokens. The page discards the refresh token, because Cognito doesn't run the expiry check on refresh.
+  - **Reviewers never become AWS principals.** Cognito issues them JWTs that one API accepts. Accounts are created by me only, expire on an immutable date, and get 30-minute tokens. The expiry is checked at sign-in and again whenever tokens are issued, so a refresh token can't outlive the account; the page discards it anyway.
 - **Data protection**
   - **Real patient data is never uploaded, and that rule is enforced.** A synthetic-only guard runs first on every file and deletes anything without the marker. The upload page runs the same rules in the browser, so a wrong file never leaves the laptop. The README says plainly that this catches accidents, not intent.
   - **Encryption and transport:** every bucket blocks public access, encrypts at rest and refuses plain HTTP. The alert topic uses a customer managed KMS key.

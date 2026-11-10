@@ -61,18 +61,19 @@ def content_security_policy(html):
 
     The page's own script embeds the data, so it changes with every build: its
     SHA-256 hash is computed here and is the only inline script allowed. Plotly
-    comes from jsDelivr, pinned by a subresource-integrity hash in the template;
-    fonts come from Google Fonts. Styles stay inline because Plotly injects them.
+    comes from jsDelivr, pinned by a subresource-integrity hash in the template,
+    and the policy names that exact file, not the whole CDN (which serves any npm
+    package). Fonts are the system's own. Styles stay inline because Plotly injects them.
     """
     inline = re.findall(r"<script>(.*?)</script>", html, flags=re.S)
+    external = re.findall(r'<script src="(https://cdn\.jsdelivr\.net/[^"]+)"', html)
     hashes = " ".join(
         "'sha256-" + base64.b64encode(hashlib.sha256(code.encode("utf-8")).digest()).decode() + "'" for code in inline
     )
     policy = "; ".join([
         "default-src 'none'",
-        f"script-src {hashes} https://cdn.jsdelivr.net",
-        "style-src 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src https://fonts.gstatic.com",
+        f"script-src {hashes} {' '.join(external)}",
+        "style-src 'unsafe-inline'",
         "img-src data:",
         "base-uri 'none'",
         "form-action 'none'",

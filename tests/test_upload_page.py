@@ -118,3 +118,35 @@ def test_browser_guard_agrees_with_the_python_guard(tmp_path):
         path.write_text(text, encoding="utf-8", newline="")
         assert (synthetic_guard.check(path) is None) == expected, (name, text)
         assert (accepted is None) == expected, (name, text, accepted)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node.js")
+def test_sign_in_errors_never_show_text_from_the_address_bar(tmp_path):
+    """A crafted link could otherwise put any message on the site's own page."""
+    html = (ROOT / "dashboard" / "upload.html").read_text()
+    js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    functions = js[js.index("const EXPIRY_MESSAGES"):js.index("function signOut")]
+    expired = "PreAuthentication failed with error This demo account has expired. Ask for a new invitation."
+    cases = [
+        {"error": "access_denied", "error_description": expired},
+        {"error": "access_denied", "error_description": "Your account is locked. Call +1 555 0100 to unlock it."},
+        {"error": "<b>call us</b>", "error_description": ""},
+        {"error": "invalid_request"},
+    ]
+    script = tmp_path / "errors.js"
+    script.write_text(functions + f"\nconsole.log(JSON.stringify({json.dumps(cases)}"
+                      ".map((c) => signInError(new URLSearchParams(c)))));")
+    shown = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
+    assert shown == [
+        "Sign-in failed: This demo account has expired. Ask for a new invitation.",
+        "Sign-in failed (access_denied).",
+        "Sign-in failed.",
+        "Sign-in failed (invalid_request).",
+    ]
+
+
+def test_the_expiry_messages_the_page_knows_are_the_triggers_own():
+    trigger = (ROOT / "infra" / "lambda" / "pre_auth" / "handler.py").read_text()
+    page = (ROOT / "dashboard" / "upload.html").read_text()
+    for message in re.findall(r'AccountExpired\("([^"]+)"\)', trigger):
+        assert f'"{message}"' in page, message

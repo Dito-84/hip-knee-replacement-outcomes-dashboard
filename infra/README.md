@@ -126,7 +126,7 @@ sequenceDiagram
 
 - **Invitation only.** Self sign-up is off; you create each account with [`scripts/demo_user.py`](../scripts/demo_user.py), and Cognito emails the reviewer a temporary password. Nobody shares a password.
 - **Accounts expire.** Each has a `custom:valid_until` date. A **pre-authentication trigger** refuses sign-in after it, to the minute, and also refuses accounts with no valid date (fail closed). It needs no AWS permissions. The attribute is **immutable**: it's set when the account is created and can't be changed afterwards by anyone, so a reviewer can't extend their own expiry with their token. The app client can also write only `email`, an explicit list. An empty write list, which the first version used, means every attribute is writable in Cognito. The smoke test caught that on the first deploy, before any reviewer account existed. The first, mutable attribute (`custom:expires_at`) stays in the pool, unused, because Cognito can't remove a custom attribute.
-- **Short tokens, no refresh.** Access and ID tokens last 30 minutes. Cognito doesn't run the pre-authentication trigger on refresh, so the page discards the refresh token (60 minutes, Cognito's minimum). Tokens are kept in page memory, never in browser storage. Disabling an account takes effect within 30 minutes, the life of a token already issued, because the JWT authorizer checks signatures, not revocation.
+- **Short tokens, and expiry checked on refresh too.** Access and ID tokens last 30 minutes. Cognito doesn't run the pre-authentication trigger on refresh, so the same function is also the **pre-token-generation** trigger, which does run then: an expired account can't get new tokens with a refresh token either. The page discards the refresh token (60 minutes, Cognito's minimum) anyway. Tokens are kept in page memory, never in browser storage. Disabling an account takes effect within 30 minutes, the life of a token already issued, because the JWT authorizer checks signatures, not revocation.
 - **Sign-in methods and scopes.** The client allows SRP (Cognito's default password method), the admin method for the smoke test (which needs IAM credentials) and refresh. It requests the `openid` and `email` scopes, so it must be able to read both `email` and `email_verified`: without `email_verified`, Cognito answers every code exchange with `invalid_grant`, which is what broke the first browser sign-in. A test checks every scope's attributes are readable.
 - **MFA is optional,** authenticator apps only. SMS would cost money and needs SNS set up for SMS.
 - **The page** uses the authorization code flow with PKCE and a public client (no secret in the page), checks `state`, and allows connections, through its Content-Security-Policy, only to the API, the Cognito domain and the intake bucket. Results are shown with `textContent` only.
@@ -145,7 +145,7 @@ sequenceDiagram
 
 **Cost at demo volume** (about 10 reviewers, 100 uploads and a few thousand API calls a month): Cognito $0 (free tier), API Gateway about $0.01 ($1.00 per million requests), the three functions and DynamoDB within the free tier or fractions of a cent, logs a few cents. Under $0.10 a month in all, and no new KMS key.
 
-**What it doesn't do.** The marker can't prove a file is synthetic (see the guard). A refresh token taken from the browser's network log would work for up to 60 minutes after expiry or disabling. MFA isn't required. These fit an invitation-only demo of synthetic data; [What would change for real patient data](#what-would-change-for-real-patient-data) lists what wouldn't.
+**What it doesn't do.** The marker can't prove a file is synthetic (see the guard). MFA isn't required. These fit an invitation-only demo of synthetic data; [What would change for real patient data](#what-would-change-for-real-patient-data) lists what wouldn't.
 
 ## Reviewer access
 
@@ -318,7 +318,7 @@ The design: a pull request shows what would change; merging changes nothing in A
 |---|---|---|
 | Diff | Pull requests, and the plan job on `main` | Read these two stacks' descriptions and templates; nothing else |
 | Deploy | Only jobs in the GitHub `production` environment, which waits for a required reviewer | Assume CDK's bootstrap deploy and file-publishing roles; inspect and execute change sets on `HipKneeDashboard` |
-| Smoke | The same environment | What [`smoke_upload.py`](../scripts/smoke_upload.py) needs: throwaway-account admin calls on the user pool, reading the stack's outputs, checking website uploads were deleted |
+| Smoke | The same environment | What [`smoke_upload.py`](../scripts/smoke_upload.py) needs: throwaway-account admin calls on this one user pool (its ID is in `cdk.json`), reading the stack's outputs, checking website uploads were deleted |
 
 Design decisions:
 

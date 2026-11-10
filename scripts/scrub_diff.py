@@ -29,7 +29,10 @@ def scrub(text: str, account: str = "", email: str = "") -> str:
 
 
 def comment(diff: str, sha: str) -> str:
-    changed = "There were no differences" not in diff and "Number of stacks with differences: 0" not in diff
+    # With two stacks, one can say "There were no differences" while the other changed: trust CDK's
+    # own count when it's there (#42's comment said "No changes" above a real diff)
+    count = re.search(r"Number of stacks with differences: (\d+)", diff)
+    changed = int(count.group(1)) > 0 if count else "There were no differences" not in diff
     if len(diff) > LIMIT:
         diff = diff[:LIMIT] + "\n… (truncated; the full diff is in the job's log)"
     headline = "This pull request changes the AWS stacks." if changed else "No changes to the AWS stacks."

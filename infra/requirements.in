@@ -1,0 +1,6 @@
+# What the CDK app needs, plus boto3 for the deploy job's replacement guard and smoke test.
+# Compile into exact pins (see the top of requirements.txt); never install this file directly.
+aws-cdk-lib>=2.200,<3
+constructs>=10,<11
+cdk-nag>=2.38,<3    # 3.x needs the newer Aspects API
+boto3

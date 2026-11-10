@@ -13,12 +13,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Check that no real data is committed
         run: python3 scripts/check_no_real_data.py
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -47,9 +47,9 @@ jobs:
     # Needs no AWS account: nothing is deployed here.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
@@ -68,4 +68,26 @@ jobs:
 
       - name: CDK synth (fails on any unexplained cdk-nag security finding)
         working-directory: infra
-        run: npx --yes aws-cdk@2 synth --quiet
+        # The CLI version is pinned in infra/package-lock.json. CI's synth is never deployed, so it may
+        # run without an alert email; a deploy can't (dashboard_infra/settings.py)
+        run: |
+          npm ci --no-audit --no-fund
+          npx --no-install cdk synth --quiet -c allow_no_alerts=true
+
+      # The Lambda runs on Python 3.14 (dashboard_infra/bundling.py); build and run its package on that
+      # version too, so production isn't the first place it runs. Last, because it changes the job's Python.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            infra/requirements.txt
+            infra/requirements-dev.txt
+            infra/lambda/data_check/requirements.txt
+            infra/lambda/data_check/requirements-nodeps.txt
+
+      - name: Lambda package on the Lambda runtime's Python (3.14)
+        run: |
+          pip install -r infra/requirements-dev.txt
+          pytest -v infra/tests/test_data_check.py -k bundled --bundle -p no:cacheprovider

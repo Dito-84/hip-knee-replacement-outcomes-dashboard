@@ -14,6 +14,13 @@ updates:
       prefix: "ci"
 
   # Python packages: the dashboard's pinned requirements, the AWS infrastructure and the data-check Lambda
+  - package-ecosystem: "npm"   # the CDK CLI that CI deploys with (infra/package-lock.json)
+    directory: "/infra"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "deps"
+
   - package-ecosystem: "pip"
     directories: ["/", "/infra", "/infra/lambda/data_check"]
     schedule:

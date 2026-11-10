@@ -23,6 +23,8 @@ on:
       - "infra/app.py"
       - "infra/cdk.json"
       - "infra/requirements.txt"
+      - "infra/package.json"
+      - "infra/package-lock.json"
       - "infra/dashboard_infra/**"
       - "infra/lambda/**"
       - "outcomes/*.py"
@@ -59,8 +61,8 @@ jobs:
     if: vars.AWS_STACK_DEPLOY_ROLE_ARN != '' && vars.AWS_DIFF_ROLE_ARN != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
@@ -70,7 +72,7 @@ jobs:
             infra/lambda/data_check/requirements-nodeps.txt
       - run: pip install -r infra/requirements.txt
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_DIFF_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -82,7 +84,8 @@ jobs:
         run: |
           account=$(aws sts get-caller-identity --query Account --output text)
           echo "::add-mask::$account"
-          npx --yes aws-cdk@2 diff "$STACK" --method=template --no-color -c alert_email="$ALERT_EMAIL" \
+          npm ci --no-audit --no-fund
+          npx --no-install cdk diff "$STACK" --method=template --no-color -c alert_email="$ALERT_EMAIL" \
             > ../diff.txt 2>&1 || echo "cdk diff exited $?" >> ../diff.txt
           python3 ../scripts/scrub_diff.py ../diff.txt "$account" "$ALERT_EMAIL"
           {
@@ -94,7 +97,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           # The CI stack is deployed by hand; say so if this merge changed it
-          if ! npx --yes aws-cdk@2 diff HipKneeDashboardCi --method=template --fail > /dev/null 2>&1; then
+          if ! npx --no-install cdk diff HipKneeDashboardCi --method=template --fail -c alert_email="$ALERT_EMAIL" \
+              > /dev/null 2>&1; then
             echo "::warning title=CI stack changed::HipKneeDashboardCi differs from what's deployed. Deploy it from your machine: npx aws-cdk@2 deploy HipKneeDashboardCi"
           fi
 
@@ -103,8 +107,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production   # waits for a required reviewer; only main may deploy
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
@@ -113,11 +117,12 @@ jobs:
             infra/requirements.txt
             infra/lambda/data_check/requirements.txt
             infra/lambda/data_check/requirements-nodeps.txt
-      # infra/requirements.txt for CDK; the root requirements (pandas) for the smoke test's samples;
-      # boto3 for the replacement guard and the smoke test (the Lambdas get it from their runtime)
-      - run: pip install -r infra/requirements.txt -r requirements.txt boto3
+      # Exact pins only: this job runs with the deploy role after approval. infra/requirements.txt has
+      # CDK and boto3 (the guard and the smoke test); the root requirements have pandas for the samples.
+      # The CDK CLI is pinned in infra/package-lock.json.
+      - run: pip install -r infra/requirements.txt -r requirements.txt
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_STACK_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -131,7 +136,8 @@ jobs:
           # Unique per run and attempt: a manual run from the same commit gets its own change set
           name="ci-${GITHUB_SHA::7}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "CHANGE_SET=$name" >> "$GITHUB_ENV"
-          npx --yes aws-cdk@2 deploy "$STACK" --method=prepare-change-set \
+          npm ci --no-audit --no-fund
+          npx --no-install cdk deploy "$STACK" --method=prepare-change-set \
             --change-set-name "$name" \
             --require-approval never -c alert_email="$ALERT_EMAIL"
 
@@ -163,7 +169,7 @@ jobs:
           aws cloudformation wait stack-update-complete --stack-name "$STACK"
           echo "Deployed change set $CHANGE_SET." >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_SMOKE_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}

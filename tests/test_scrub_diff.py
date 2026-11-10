@@ -39,3 +39,11 @@ def test_scrub_in_place(tmp_path):
     path.write_text(DIFF)
     scrub_diff.main([str(path), "123456789012", "me.name+demo@example.com"])
     assert "123456789012" not in path.read_text()
+
+
+def test_one_changed_stack_is_a_change_even_if_the_other_has_none():
+    """Both stacks are diffed together, so 'There were no differences' can be about the other one."""
+    diff = ("Stack HipKneeDashboard\n[~] AWS::Cognito::UserPool Pool\n"
+            "Stack HipKneeDashboardCi\nThere were no differences\n\nNumber of stacks with differences: 1")
+    assert "This pull request changes the AWS stacks." in scrub_diff.comment(diff, "abcdef1")
+    assert "No changes" in scrub_diff.comment(diff.replace("differences: 1", "differences: 0"), "abcdef1")

@@ -11,7 +11,8 @@ Settings (pass with -c name=value, or edit cdk.json):
   github_owner_id, github_repo_id
                                GitHub's permanent IDs for the owner and repository (see infra/README.md)
   existing_oidc_provider_arn   set if the account already has a GitHub OIDC provider
-  alert_email                  email for data-check results and budget alerts (optional)
+  alert_email                  email for data-check results, alarms and budget alerts (required;
+                               -c allow_no_alerts=true only for a synth that won't be deployed)
   monthly_budget_usd           budget alert threshold, needs alert_email (default: 5)
   auth_domain_prefix           Cognito sign-in domain prefix, unique in the region
                                (default: hip-knee-dashboard-dito84)
@@ -30,10 +31,12 @@ from cdk_nag import AwsSolutionsChecks  # noqa: E402
 
 from dashboard_infra.ci import CiStack  # noqa: E402
 from dashboard_infra.nag import add_ci_suppressions, add_suppressions  # noqa: E402
+from dashboard_infra.settings import alert_email  # noqa: E402
 from dashboard_infra.stack import DashboardStack  # noqa: E402
 
 app = cdk.App()
 ctx = app.node.try_get_context
+email = alert_email(ctx)   # stops here if it's missing: see dashboard_infra/settings.py
 
 stack = DashboardStack(
     app, "HipKneeDashboard",
@@ -42,7 +45,7 @@ stack = DashboardStack(
     github_owner_id=str(ctx("github_owner_id") or "") or None,
     github_repo_id=str(ctx("github_repo_id") or "") or None,
     existing_oidc_provider_arn=ctx("existing_oidc_provider_arn") or None,
-    alert_email=ctx("alert_email") or None,
+    alert_email=email,
     monthly_budget_usd=int(ctx("monthly_budget_usd") or 5),
     auth_domain_prefix=ctx("auth_domain_prefix") or "hip-knee-dashboard-dito84",
     env=cdk.Environment(region=ctx("region") or "us-east-1"),

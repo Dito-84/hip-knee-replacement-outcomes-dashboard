@@ -1,0 +1,8 @@
+{
+  "name": "hip-knee-dashboard-infra",
+  "private": true,
+  "description": "Pins the AWS CDK CLI that CI deploys with. Install with `npm ci`; run with `npx cdk ...`.",
+  "devDependencies": {
+    "aws-cdk": "2.1148.0"
+  }
+}

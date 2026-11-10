@@ -1,5 +1,5 @@
 # Bundled into the Lambda package for Linux ARM64, Python 3.14 (boto3 is already in the Lambda runtime)
-pandas==3.1.0
+pandas==3.1.1
 numpy==2.5.4
 # dstoolkit's compare() uses SciPy for the KS and chi-square tests in the drift check
 scipy==1.18.1

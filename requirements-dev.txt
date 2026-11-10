@@ -1,6 +1,6 @@
 # requirements.txt plus the test and lint tools. Generated from pyproject.toml:
 #   uv pip compile pyproject.toml --extra dev --python-version 3.12 -o requirements-dev.txt
-coverage==7.17.0
+coverage==7.17.2
     # via pytest-cov
 et-xmlfile==2.0.0
     # via openpyxl
@@ -14,7 +14,7 @@ openpyxl==3.1.5
     # via hip-knee-outcomes (pyproject.toml)
 packaging==26.3
     # via pytest
-pandas==3.1.0
+pandas==3.1.1
     # via hip-knee-outcomes (pyproject.toml)
 pluggy==1.7.0
     # via
@@ -32,7 +32,7 @@ python-dateutil==2.9.0.post0
     # via
     #   hip-knee-outcomes (pyproject.toml)
     #   pandas
-ruff==0.17.3
+ruff==0.17.4
     # via hip-knee-outcomes (pyproject.toml)
 six==1.17.0
     # via python-dateutil

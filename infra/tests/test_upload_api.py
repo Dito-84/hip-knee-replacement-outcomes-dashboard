@@ -263,3 +263,17 @@ def test_demo_accounts_expire_at_the_end_of_their_last_day():
     assert demo_user.expiry(1, now) == "2026-11-08T23:59:59Z"
     assert demo_user.expiry(7, now) == "2026-11-14T23:59:59Z"
     assert 20 <= len(demo_user.expiry(7, now)) <= 25   # the custom attribute's length limits
+
+
+def test_demo_user_list_says_when_an_expired_account_will_be_deleted():
+    demo_user = load(ROOT / "scripts", "demo_user")
+    now = datetime(2026, 11, 20, 12, tzinfo=UTC)
+    assert demo_user.lifecycle("2026-11-30T23:59:59Z", now) == "valid until 2026-11-30T23:59:59Z"
+    assert demo_user.lifecycle("2026-11-15T23:59:59Z", now) == \
+        "EXPIRED 2026-11-15T23:59:59Z; the daily clean-up deletes it after 2026-11-22"
+    assert "no expiry" in demo_user.lifecycle(None, now)
+
+
+def test_demo_user_and_the_clean_up_agree_on_the_grace_period():
+    from dashboard_infra.uploads import CLEANUP_GRACE_DAYS
+    assert load(ROOT / "scripts", "demo_user").CLEANUP_GRACE_DAYS == CLEANUP_GRACE_DAYS

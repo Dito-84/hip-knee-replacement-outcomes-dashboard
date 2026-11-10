@@ -4,6 +4,8 @@ Bundling is skipped (aws:cdk:bundling-stacks = []), so these run in seconds
 without downloading pandas.
 """
 
+from pathlib import Path
+
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Annotations, Match, Template
@@ -263,16 +265,35 @@ def test_failed_uploads_are_retried_then_kept_in_a_queue(template):
 def test_alarms_email_on_errors_and_on_given_up_uploads(template):
     topic = _logical(template, "AWS::SNS::Topic", "DataCheckAlerts")
     alarms = template.find_resources("AWS::CloudWatch::Alarm")
-    # data check (errors, gave up) + upload functions (presign, results, pre-auth) + API 5xx;
-    # 6 alarms, inside CloudWatch's free 10
-    assert len(alarms) == 6
-    metrics = sorted(a["Properties"]["MetricName"] for a in alarms.values())
-    assert metrics == ["5xx", "ApproximateNumberOfMessagesVisible", "Errors", "Errors", "Errors",
+    # data check (errors, gave up) + upload functions (presign, results, pre-auth, clean-up) + API 5xx
+    # + the website; 8 alarms, inside CloudWatch's free 10 (the site alarm's metric math counts as 2 metrics,
+    # also free: default CloudFront metrics)
+    assert len(alarms) == 8
+    single = {k: a for k, a in alarms.items() if "MetricName" in a["Properties"]}
+    metrics = sorted(a["Properties"]["MetricName"] for a in single.values())
+    assert metrics == ["5xx", "ApproximateNumberOfMessagesVisible", "Errors", "Errors", "Errors", "Errors",
                        "PreAuthUnexpectedErrors"]
+    for props in single.values():
+        props = props["Properties"]
+        assert props["Threshold"] == 1
     for props in alarms.values():
         props = props["Properties"]
-        assert props["AlarmActions"] == [{"Ref": topic}]
-        assert props["Threshold"] == 1 and props["TreatMissingData"] == "notBreaching"
+        assert props["AlarmActions"] == [{"Ref": topic}] and props["TreatMissingData"] == "notBreaching"
+
+
+def test_the_site_alarm_ignores_a_single_failed_request(template):
+    """One error on a quiet demo site is a 100% rate; it takes 10 requests and >10% failing, twice in 15 minutes."""
+    [props] = [a["Properties"] for a in template.find_resources("AWS::CloudWatch::Alarm").values()
+               if "Metrics" in a["Properties"]]
+    assert props["Threshold"] == 10 and props["ComparisonOperator"] == "GreaterThanThreshold"
+    assert props["EvaluationPeriods"] == 3 and props["DatapointsToAlarm"] == 2
+    by_id = {m["Id"]: m for m in props["Metrics"]}
+    assert [m["Expression"] for m in by_id.values() if "Expression" in m] == ["IF(requests >= 10, rate, 0)"]
+    names = {m["MetricStat"]["Metric"]["MetricName"]: m["MetricStat"]["Metric"]["Dimensions"]
+             for m in props["Metrics"] if "MetricStat" in m}
+    assert set(names) == {"5xxErrorRate", "Requests"}
+    for dims in names.values():   # CloudFront's metrics have both; without Region the alarm sees no data
+        assert {"Name": "Region", "Value": "Global"} in dims and dims[0]["Name"] == "DistributionId"
 
 
 def test_alert_topic_uses_a_key_cloudwatch_can_use(template):
@@ -468,7 +489,7 @@ def test_pre_auth_trigger_has_no_aws_permissions(template):
 
 def test_no_upload_function_uses_aws_managed_policies(template):
     roles = {k: r for k, r in template.find_resources("AWS::IAM::Role").items() if k.startswith("Uploads")}
-    assert len(roles) == 3
+    assert len(roles) == 4   # pre-auth, presign, results, account clean-up
     assert all("ManagedPolicyArns" not in r["Properties"] for r in roles.values())
 
 
@@ -520,3 +541,38 @@ def test_both_stacks_have_termination_protection():
 
     app_py = (__import__("pathlib").Path(__file__).resolve().parents[1] / "app.py").read_text()
     assert len(re.findall(r"termination_protection=True", app_py)) == 2
+
+
+def test_expired_accounts_are_cleaned_up_daily_with_a_pool_scoped_role(template):
+    """Deleting expired accounts used to depend on remembering to; their email addresses are personal data."""
+    fn = _logical(template, "AWS::Lambda::Function", "UploadsAccountCleanupFunction")
+    props = template.find_resources("AWS::Lambda::Function")[fn]["Properties"]
+    assert props["Environment"]["Variables"]["GRACE_DAYS"] == "7"
+    [rule] = template.find_resources("AWS::Events::Rule").values()
+    assert rule["Properties"]["ScheduleExpression"] == "cron(17 7 * * ? *)"
+    assert rule["Properties"]["Targets"][0]["Arn"] == {"Fn::GetAtt": [fn, "Arn"]}
+    role = "UploadsAccountCleanupFunctionRole"
+    [stmt] = [s for s in statements(template, role) if s.get("Sid") == "DeleteExpiredAccounts"]
+    assert sorted(stmt["Action"]) == ["cognito-idp:AdminDeleteUser", "cognito-idp:ListUsers"]
+    pool = _logical(template, "AWS::Cognito::UserPool", "UploadsUserPool")
+    assert stmt["Resource"] == {"Fn::GetAtt": [pool, "Arn"]}
+
+
+def test_the_upload_pages_privacy_note_matches_what_the_stack_keeps(template):
+    """The page tells reviewers how long each thing is kept; a change here must change the page too."""
+    from dashboard_infra.uploads import CLEANUP_GRACE_DAYS
+    page = (Path(__file__).resolve().parents[2] / "dashboard" / "upload.html").read_text()
+    note = page[page.index('<section id="privacy">'):page.index("</section>", page.index('<section id="privacy">'))]
+    note = " ".join(note.split())
+    api_logs = [g["Properties"]["RetentionInDays"] for k, g in template.find_resources("AWS::Logs::LogGroup").items()
+                if k.startswith("UploadsApiAccessLogs")]
+    assert api_logs == [30] and "access logs for 30 days" in note
+    assert f"until {CLEANUP_GRACE_DAYS} days after your access ends" in note
+    rules = [r for b in template.find_resources("AWS::S3::Bucket").values()
+             for r in b["Properties"].get("LifecycleConfiguration", {}).get("Rules", [])]
+    assert {"Prefix": "reports/web/", "ExpirationInDays": 7, "Status": "Enabled"}.items() <= \
+        next(r for r in rules if r.get("Prefix") == "reports/web/").items()
+    assert "result is kept 7 days" in note
+    log_bucket = next(b for k, b in template.find_resources("AWS::S3::Bucket").items() if k.startswith("LogBucket"))
+    assert log_bucket["Properties"]["LifecycleConfiguration"]["Rules"][0]["ExpirationInDays"] == 90
+    assert "website's access logs for 90 days" in note

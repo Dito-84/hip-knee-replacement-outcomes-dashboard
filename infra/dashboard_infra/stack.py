@@ -298,7 +298,24 @@ class DashboardStack(Stack):
             self, "Uploads", intake_bucket=self.intake_bucket,
             site_domain=self.distribution.distribution_domain_name, auth_domain_prefix=auth_domain_prefix)
 
-        self.alarms = [self.error_alarm, self.lost_alarm, *self.uploads.alarms]
+        # The site itself: CloudFront's free default metrics (us-east-1, like the stack). A demo
+        # site gets little traffic, so one failed request is a 100% error rate: alarm only when
+        # there were at least 10 requests in the 5 minutes and over 10% failed, twice in 15 minutes.
+        self.site_alarm = cloudwatch.Alarm(
+            self, "SiteServerErrors",
+            alarm_description="CloudFront returned 5xx errors for over 10% of at least 10 requests, in 2 of "
+                              "3 five-minute periods: the website may be down for visitors.",
+            metric=cloudwatch.MathExpression(
+                expression="IF(requests >= 10, rate, 0)",
+                using_metrics={"rate": self._site_metric("5xxErrorRate", "Average"),
+                               "requests": self._site_metric("Requests", "Sum")},
+                period=Duration.minutes(5), label="5xx rate (%) when there's traffic"),
+            threshold=10, evaluation_periods=3, datapoints_to_alarm=2,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+
+        self.alarms = [self.error_alarm, self.lost_alarm, self.site_alarm, *self.uploads.alarms]
         for alarm in self.alarms:
             alarm.add_alarm_action(alarm_action)
         # Only this stack's alarms may publish, and only from this account
@@ -351,3 +368,11 @@ class DashboardStack(Stack):
                 for kind, pct in (("ACTUAL", 80), ("FORECASTED", 100))
             ],
         )
+
+    def _site_metric(self, name: str, statistic: str) -> cloudwatch.Metric:
+        """A CloudFront metric. CloudFront publishes with two dimensions, DistributionId and
+        Region=Global; the Distribution's own metric helpers leave out Region, and an alarm on a
+        metric with the wrong dimensions finds no data and never fires."""
+        return cloudwatch.Metric(
+            namespace="AWS/CloudFront", metric_name=name, statistic=statistic, period=Duration.minutes(5),
+            dimensions_map={"DistributionId": self.distribution.distribution_id, "Region": "Global"})

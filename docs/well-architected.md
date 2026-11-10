@@ -45,6 +45,8 @@ The pattern was the same each time: the failure surfaced from a live check, and 
 
 Using an escape hatch means writing down why, in the pull request or the commit.
 
+**Proving the alarms work.** An alarm that has never fired is an untested email path. `scripts/alarm_drill.py` sets them to ALARM by hand, and infra/README.md has a short runbook for each. The smoke test's eighth check compares the live upload page's settings with the stack's outputs, because the `UPLOAD_*` variables are copied by hand and a stale one would break sign-in with no alarm.
+
 **Next.** A CloudWatch dashboard and an hourly synthetic canary for the happy path. Today the alarms only report what's broken; they don't show what's working.
 
 ## Security

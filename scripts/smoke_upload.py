@@ -17,10 +17,14 @@ sample batches are uploaded.
   5. a file without the synthetic marker is rejected, and deleted
   6. the clean sample passes, and is deleted
   7. an expired account can't sign in (a second throwaway account, created expired)
+  8. the live upload page's settings match the stack's outputs (the GitHub UPLOAD_* variables
+     are copied by hand, and a stack change that gave the API or app client a new ID would
+     otherwise break sign-in with nothing to say why)
 """
 
 import argparse
 import json
+import re
 import secrets
 import sys
 import time
@@ -43,6 +47,30 @@ STACK = "HipKneeDashboard"
 def outputs(session) -> dict:
     stack = session.client("cloudformation").describe_stacks(StackName=STACK)["Stacks"][0]
     return {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+
+
+def page_config(html: str) -> dict | None:
+    """The settings build.py wrote into upload.html (None if the page has none). The intake
+    bucket isn't a setting: the page only uses the presigned POST's URL, so the bucket appears
+    in the CSP's connect-src, which must allow it."""
+    match = re.search(r"const CONFIG = (\{.*?\});", html)
+    if not match:
+        return None
+    config = json.loads(match.group(1))
+    bucket = re.search(r"connect-src [^;\"]*https://([a-z0-9.-]+)\.s3\.amazonaws\.com", html)
+    config["bucket"] = bucket.group(1) if bucket else ""
+    return config
+
+
+def config_mismatches(config: dict | None, out: dict) -> list[str]:
+    """Which of the page's settings differ from the stack's outputs (names only)."""
+    if config is None:
+        return ["the page has no settings (built without the UPLOAD_* variables)"]
+    expected = {"apiUrl": out["UploadApiUrl"].rstrip("/"), "authDomain": out["AuthDomain"].rstrip("/"),
+                "clientId": out["UserPoolClientId"], "bucket": out["IntakeBucketName"]}
+    names = {"apiUrl": "UPLOAD_API_URL", "authDomain": "UPLOAD_AUTH_DOMAIN", "clientId": "UPLOAD_CLIENT_ID",
+             "bucket": "UPLOAD_BUCKET"}
+    return [names[k] for k, v in expected.items() if str(config.get(k, "")).rstrip("/") != v]
 
 
 def request(method, url, token=None, body=None, headers=None):
@@ -181,6 +209,12 @@ def main(argv=None):
         except ClientError as err:
             assert err.response["Error"]["Code"] == "UserLambdaValidationException", err
         ok("7. expired account: sign-in refused")
+
+        status, html = request("GET", out["UploadPageUrl"])
+        assert status == 200, f"the upload page gave {status}"
+        wrong = config_mismatches(page_config(html.decode()), out)
+        assert not wrong, f"the live upload page doesn't match the stack: update {', '.join(wrong)}, redeploy the site"
+        ok("8. the live upload page's settings match the stack's outputs")
     finally:
         for address in created:
             cognito.admin_delete_user(UserPoolId=pool, Username=address)

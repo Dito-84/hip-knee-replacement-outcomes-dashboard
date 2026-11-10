@@ -3,4 +3,4 @@
 # The dashboard itself, its tests and the public site never need it.
 # The same version as the data-check Lambda's drift check (infra/lambda/data_check/requirements-nodeps.txt),
 # so the repo uses one dstoolkit. It's on PyPI as pandas-dstoolkit and imported as dstoolkit.
-pandas-dstoolkit==0.15.2
+pandas-dstoolkit==0.17.0

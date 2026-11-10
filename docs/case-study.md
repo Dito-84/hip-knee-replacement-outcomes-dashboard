@@ -162,7 +162,7 @@ The alert topic was encrypted with AWS's managed key for SNS. CloudWatch alarms 
 
 ### Pinning a dependency so it can't change underneath you
 
-At first the Lambda pinned dstoolkit to a git commit, not to its `v0.15.1` tag. A tag can be deleted and recreated pointing at different code, and the next deploy would ship it without anyone noticing. A commit can't change. Since then I've published dstoolkit to PyPI as `pandas-dstoolkit` (PyPI treats `dstoolkit` as too close to an unrelated `ds-toolkit`). GitHub Actions uploads each release through trusted publishing, so no upload token exists. The Lambda now pins version 0.15.2 **and its SHA-256 hash**. PyPI never lets a version's files be replaced, and pip refuses any file whose hash doesn't match, so the pin is as fixed as a commit. Deploying also no longer needs git or a local build.
+At first the Lambda pinned dstoolkit to a git commit, not to its `v0.15.1` tag. A tag can be deleted and recreated pointing at different code, and the next deploy would ship it without anyone noticing. A commit can't change. Since then I've published dstoolkit to PyPI as `pandas-dstoolkit` (PyPI treats `dstoolkit` as too close to an unrelated `ds-toolkit`). GitHub Actions uploads each release through trusted publishing, so no upload token exists. The Lambda now pins a released version (0.17.0 today) **and its SHA-256 hash**. PyPI never lets a version's files be replaced, and pip refuses any file whose hash doesn't match, so the pin is as fixed as a commit. Deploying also no longer needs git or a local build.
 
 ### Letting reviewers upload, without ever risking real data
 

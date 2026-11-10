@@ -9,7 +9,7 @@ numpy==2.5.4
     #   pandas
 openpyxl==3.1.5
     # via hip-knee-outcomes (pyproject.toml)
-pandas==3.1.0
+pandas==3.1.1
     # via hip-knee-outcomes (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via

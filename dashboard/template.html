@@ -6,9 +6,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hip &amp; Knee Replacement Outcomes</title>
 <meta name="description" content="Complications, complication readmissions and length of stay after total hip and knee replacement (THA/TKA).">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"
         integrity="sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7" crossorigin="anonymous"></script>
 <style>
@@ -41,7 +38,7 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 16px 48px; }
   header h1 { font-size: 26px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
@@ -214,13 +211,15 @@ const num = v => v == null ? "–" : v.toLocaleString("en-US");
 const dec = (v, d = 1) => v == null ? "–" : v.toFixed(d);
 const ciText = ci => !ci || ci[0] == null ? "–" : `${pct(ci[0])} to ${pct(ci[1])}`;
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// Hospital names and the source label come from the data file: escape them before they go into HTML
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
 
 function banner() {
   const synthetic = DATA.source === "synthetic";
   document.getElementById("banner").innerHTML = synthetic
     ? "<strong>Synthetic data.</strong> Every record on this page is randomly generated to resemble Medicare " +
       "hip and knee replacement data. No real patients or hospitals are represented."
-    : "<strong>Private data:</strong> " + DATA.source + ". This build is for local use only; do not publish it.";
+    : "<strong>Private data:</strong> " + esc(DATA.source) + ". This build is for local use only; do not publish it.";
   document.getElementById("source-note").textContent =
     `${num(DATA.records)} records, admissions ${DATA.date_range[0]} – ${DATA.date_range[1]}.` +
     (DATA.suppressed_under ? ` Counts of 1 to ${DATA.suppressed_under - 1}, and figures computed from them, are hidden (shown as –).` : "");
@@ -258,10 +257,10 @@ function layout(extra = {}) {
   return Object.assign({
     margin: { l: 48, r: 16, t: 8, b: 40 },
     paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
-    font: { family: "Inter, system-ui, sans-serif", size: 12, color: muted },
+    font: { family: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif", size: 12, color: muted },
     xaxis: { gridcolor: line, linecolor: line, zeroline: false, tickfont: { color: muted } },
     yaxis: { gridcolor: line, linecolor: line, zeroline: false, tickfont: { color: muted }, rangemode: "tozero" },
-    showlegend: false, hoverlabel: { font: { family: "Inter, system-ui, sans-serif", color: ink }, bgcolor: css("--panel"), bordercolor: line },
+    showlegend: false, hoverlabel: { font: { family: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif", color: ink }, bgcolor: css("--panel"), bordercolor: line },
     bargap: 0.25,
   }, extra);
 }
@@ -445,7 +444,7 @@ function render() {
 
   document.getElementById("t-hospital").innerHTML =
     "<thead><tr><th>Hospital</th><th>Surgeries</th><th>Complication</th><th>95% CI</th><th>O/E</th><th>30-day readmit</th><th>Avg stay</th></tr></thead><tbody>" +
-    hospitals.map(h => `<tr><td>${h.hospital}</td><td>${num(h.stays)}</td><td>${pct(h.complication_rate)}</td><td>${ciText(h.complication_ci)}</td><td>${dec(h.oe_ratio, 2)}</td>` +
+    hospitals.map(h => `<tr><td>${esc(h.hospital)}</td><td>${num(h.stays)}</td><td>${pct(h.complication_rate)}</td><td>${ciText(h.complication_ci)}</td><td>${dec(h.oe_ratio, 2)}</td>` +
       `<td>${pct(h.readmit30_rate)}</td><td>${dec(h.avg_los, 2)} d</td></tr>`).join("") + "</tbody>";
 }
 

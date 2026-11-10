@@ -5,6 +5,7 @@
     "github_branch": "main",
     "github_owner_id": "142613285",
     "github_repo_id": "1429165974",
-    "region": "us-east-1"
+    "region": "us-east-1",
+    "user_pool_id": "us-east-1_ILopJIO5C"
   }
 }

@@ -356,7 +356,9 @@ def test_only_invited_users_can_sign_in(template):
     assert all(policy[k] for k in ("RequireLowercase", "RequireUppercase", "RequireNumbers", "RequireSymbols"))
     assert pool["UserPoolTier"] == "ESSENTIALS"
     assert pool["DeletionProtection"] == "ACTIVE"
-    assert "PreAuthentication" in pool["LambdaConfig"]
+    # The expiry check runs on sign-in and again whenever tokens are issued, refreshes included
+    config = pool["LambdaConfig"]
+    assert config["PreAuthentication"] == config["PreTokenGeneration"]
     # The expiry can't be changed after creation, by anyone
     assert {"Name": "valid_until", "AttributeDataType": "String", "Mutable": False,
             "StringAttributeConstraints": {"MinLength": "20", "MaxLength": "25"}} in pool["Schema"]

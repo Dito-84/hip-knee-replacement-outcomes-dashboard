@@ -161,6 +161,21 @@ async function finishSignIn(params) {
   }, Math.max(0, (tokens.expires_in - 30) * 1000));
 }
 
+// Fixed messages only: anything in the address bar can be written by whoever made the link, so the page
+// never shows it as is. The expiry trigger's two messages are recognized; any other error shows its code,
+// and only if it looks like one.
+const EXPIRY_MESSAGES = [
+  "This demo account has expired. Ask for a new invitation.",
+  "This demo account has no valid expiry date. Ask for a new invitation.",
+];
+function signInError(params) {
+  const description = params.get("error_description") || "";
+  const known = EXPIRY_MESSAGES.find((m) => description.includes(m));
+  if (known) return `Sign-in failed: ${known}`;
+  const code = params.get("error") || "";
+  return /^[a-z_]{1,40}$/.test(code) ? `Sign-in failed (${code}).` : "Sign-in failed.";
+}
+
 function signOut() {
   accessToken = null;
   const query = new URLSearchParams({ client_id: CONFIG.clientId, logout_uri: pageUrl });
@@ -332,8 +347,7 @@ async function start() {
   const params = new URLSearchParams(location.search);
   if (params.get("error")) {
     history.replaceState(null, "", pageUrl);
-    // Cognito puts the pre-authentication trigger's message (e.g. an expired account) in error_description
-    show("signed-out", `Sign-in failed: ${params.get("error_description") || params.get("error")}`);
+    show("signed-out", signInError(params));
     return;
   }
   if (params.get("code")) {

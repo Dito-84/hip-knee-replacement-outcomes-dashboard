@@ -10,13 +10,14 @@ from dashboard_infra.nag import add_ci_suppressions
 
 REPO = "Dito-84/hip-knee-replacement-outcomes-dashboard"
 IDS = ("142613285", "1429165974")
+POOL = "us-east-1_EXAMPLE1"   # made up
 
 
 @pytest.fixture(scope="module")
 def stack():
     app = cdk.App()
     stack = CiStack(app, "Ci", github_repo=REPO, github_owner_id=IDS[0], github_repo_id=IDS[1],
-                    env=cdk.Environment(region="us-east-1"))
+                    user_pool_id=POOL, env=cdk.Environment(region="us-east-1"))
     add_ci_suppressions(stack)
     cdk.Aspects.of(app).add(AwsSolutionsChecks())
     return stack
@@ -111,6 +112,14 @@ def test_smoke_role_only_has_what_the_smoke_test_uses(template):
         "cognito-idp:AdminInitiateAuth", "cognito-idp:AdminDeleteUser", "s3:ListBucket", "s3:GetObject"}
     assert stmts["SeeWebUploadsAreGone"]["Condition"] == {"StringLike": {"s3:prefix": ["incoming/web/*"]}}
     assert stmts["HeadWebUploads"]["Resource"] == "arn:aws:s3:::hipkneedashboard-intakebucket*/incoming/web/*"
+    # Cognito admin actions on this one pool, never every pool in the account
+    pool_arn = stmts["ThrowawayAccounts"]["Resource"]["Fn::Join"][1]
+    assert pool_arn[-1] == f":userpool/{POOL}" and "*" not in "".join(p for p in pool_arn if isinstance(p, str))
+
+
+def test_the_ci_stack_needs_the_user_pool_id():
+    with pytest.raises(ValueError, match="user_pool_id"):
+        CiStack(cdk.App(), "Ci", github_repo=REPO, user_pool_id="", env=cdk.Environment(region="us-east-1"))
 
 
 def test_roles_have_one_hour_sessions_and_no_managed_policies(template):

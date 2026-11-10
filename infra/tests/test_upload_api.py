@@ -233,6 +233,24 @@ def test_sign_in_refused_after_expiry_or_without_a_valid_one(pre_auth, valid_unt
         pre_auth.handler(auth_event(valid_until), None)
 
 
+def token_event(valid_until, source="TokenGeneration_RefreshTokens"):
+    """What Cognito sends the pre-token-generation trigger (V1): the same userAttributes."""
+    return {"triggerSource": source, "request": {"userAttributes": {"custom:valid_until": valid_until},
+                                                 "groupConfiguration": {}}, "response": {"claimsOverrideDetails": None}}
+
+
+def test_an_expired_account_cant_refresh_its_tokens(pre_auth):
+    """Pre-authentication doesn't run on refresh; the same check as the token trigger does."""
+    with pytest.raises(pre_auth.AccountExpired):
+        pre_auth.handler(token_event("2020-01-01T00:00:00Z"), None)
+
+
+def test_a_valid_account_refreshes_with_its_claims_unchanged(pre_auth):
+    soon = (datetime.now(UTC) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    e = token_event(soon)
+    assert pre_auth.handler(e, None) is e and e["response"] == {"claimsOverrideDetails": None}
+
+
 # ---------- scripts/demo_user.py ----------
 
 def test_demo_accounts_expire_at_the_end_of_their_last_day():

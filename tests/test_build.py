@@ -38,6 +38,18 @@ def test_page_has_a_content_security_policy_matching_its_script(tmp_path):
     digest = base64.b64encode(hashlib.sha256(inline[0].encode()).digest()).decode()
     assert f"'sha256-{digest}'" in policy
     assert re.search(r'<script src="https://cdn\.jsdelivr\.net/[^"]+"\s+integrity="sha384-', html)
+    # The exact library file, not the whole CDN (which serves any npm package); no third-party fonts
+    [src] = re.findall(r'<script src="([^"]+)"', html)
+    script_src = policy.split("script-src")[1].split(";")[0].split()
+    assert src in script_src and "https://cdn.jsdelivr.net" not in script_src
+    assert "googleapis" not in html and "gstatic" not in html and "font-src" not in policy
+
+
+def test_names_from_the_data_file_are_escaped_before_they_reach_the_page():
+    """A build of someone's own file puts its hospital names and label into HTML."""
+    template = (ROOT / "dashboard" / "template.html").read_text()
+    assert "<td>${esc(h.hospital)}</td>" in template and "esc(DATA.source)" in template
+    assert "<td>${h.hospital}</td>" not in template
 
 
 def test_sri_hash_matches_the_standard_encoding():

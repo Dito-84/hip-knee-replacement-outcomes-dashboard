@@ -29,6 +29,13 @@ STATEFUL = {
     "AWS::KMS::Key": "KMS key (the alert topic can't be read without it)",
     "AWS::CloudFront::Distribution": "CloudFront distribution (the site's address)",
     "AWS::SQS::Queue": "queue (failed checks waiting to be looked at)",
+    # Not data, but losing or replacing these breaks something with no error to show for it
+    "AWS::SNS::Topic": "alert topic (a new one needs its email subscription confirmed again)",
+    "AWS::SNS::Subscription": "alert email subscription (alarms and reports would stop emailing)",
+    "AWS::Budgets::Budget": "budget alert",
+    "AWS::IAM::OIDCProvider": "GitHub OIDC provider (every CI role trusts it: CI would be locked out)",
+    "AWS::Cognito::UserPoolClient": "app client (a new ID breaks sign-in until UPLOAD_CLIENT_ID is updated)",
+    "AWS::ApiGatewayV2::Api": "upload API (a new URL breaks the upload page until UPLOAD_API_URL is updated)",
 }
 NO_CHANGES = 3
 EMPTY_REASONS = ("didn't contain changes", "No updates are to be performed")

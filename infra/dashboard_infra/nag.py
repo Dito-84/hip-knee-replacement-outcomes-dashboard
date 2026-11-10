@@ -53,9 +53,9 @@ def add_suppressions(stack: Stack) -> None:
                    "nothing but the upload API."),
         NagPackSuppression(
             id="AwsSolutions-COG8",
-            reason="The Plus tier (threat protection) has no free tier and costs more than the rest of the stack. "
-                   "Sign-up is closed, accounts expire, and the API is throttled with daily upload limits. "
-                   "Essentials, free under 10,000 users a month, already gives managed login."),
+            reason="The Plus tier (threat protection) isn't needed, though at a few reviewers it would cost cents: "
+                   "its checks matter for open sign-up at scale. Here sign-up is closed, every account is "
+                   "admin-created and expires within 30 days, and the API is throttled with daily upload limits."),
     ])
     NagSuppressions.add_resource_suppressions(uploads.presign.role, [
         NagPackSuppression(

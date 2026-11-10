@@ -1,8 +1,7 @@
-# For the tests only: boto3 is built into the Lambda runtime, so it isn't bundled
+# For the tests only. boto3 comes from requirements.txt (pinned; the Lambda runtime has its own, so it isn't bundled)
 -r requirements.txt
 -r ../requirements.txt
-boto3
-pytest
+pytest==9.2.0    # keep in step with ../requirements-dev.txt
 # The drift check's libraries, so the Lambda tests run here (the package itself is built by bundling.py)
 scipy==1.18.1
 pandas-dstoolkit==0.17.0

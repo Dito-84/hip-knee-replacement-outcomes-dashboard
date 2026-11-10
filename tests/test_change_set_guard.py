@@ -82,3 +82,11 @@ def test_a_change_set_that_failed_for_a_real_reason_fails_the_job(monkeypatch, c
 def test_a_change_set_still_being_created_isnt_executed(monkeypatch):
     monkeypatch.setattr(guard, "fetch_changes", lambda *_: ("CREATE_PENDING", "", []))
     assert guard.main(["--stack", "S", "--change-set", "c"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["AWS::SNS::Subscription", "AWS::Budgets::Budget", "AWS::IAM::OIDCProvider",
+                                  "AWS::Cognito::UserPoolClient", "AWS::ApiGatewayV2::Api", "AWS::SNS::Topic"])
+def test_removing_what_alerts_ci_or_the_upload_page_depend_on_is_refused(kind):
+    """Not data, but losing these breaks alerting, CI or sign-in without an error to show for it."""
+    [problem] = guard.violations([change(kind, action="Remove", name="Res")])
+    assert problem.startswith("Res: would REMOVE")

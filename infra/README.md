@@ -242,7 +242,7 @@ You need an AWS account, **Python 3.12 or newer** (the Lambda's pinned numpy and
    pip install -r requirements.txt
    export AWS_PROFILE=dashboard
    npx aws-cdk@2 bootstrap                                   # once per account and region
-   npx aws-cdk@2 deploy HipKneeDashboard -c alert_email=you@example.com   # omit -c ... to skip email and budget alerts
+   npx aws-cdk@2 deploy HipKneeDashboard -c alert_email=you@example.com   # required: synth stops without it
    ```
    If the deploy fails with *"Provider with url https://token.actions.githubusercontent.com already exists"*, your account already trusts GitHub. Add `-c existing_oidc_provider_arn=arn:aws:iam::<account id>:oidc-provider/token.actions.githubusercontent.com` and run the deploy again.
 4. **Confirm the email.** AWS sends a subscription confirmation; click the link in it.
@@ -325,6 +325,8 @@ Design decisions:
 - **A separate stack.** If these roles lived in the stack CI deploys, one bad change could lock CI out of deploying the fix. This one changes rarely, and you deploy it yourself.
 - **Not CDK's lookup role for diffs.** It carries `ReadOnlyAccess`, which includes `s3:GetObject` on every bucket, and a pull request's diff runs that branch's code. The Diff role reads two templates and nothing else. Pull requests from forks and Dependabot can't get OIDC tokens, so their diff is skipped.
 - **Template diffs before approval, and a replacement guard after.** A full `cdk diff` creates a change set, which needs the deploy role; granting that before approval would undermine the gate. So pull requests and the plan job compare templates (`--method=template`), and the deploy job creates the change set, fails if it would replace a stateful resource, and only then executes it.
+- **A pinned toolchain.** Approving a deploy approves whatever the job runs, with CDK's deploy role. So the job runs only pinned code: the CDK CLI from [`package-lock.json`](package-lock.json) (`npm ci`, then `npx cdk`), exact Python versions from [`requirements.txt`](requirements.txt) (compiled from `requirements.in`), and actions pinned by commit SHA. The plan and the change set are built from the same versions, and Dependabot proposes updates as reviewable pull requests.
+- **No deploy without alerts.** `alert_email` isn't in `cdk.json` (the repository is public), and a synth without it would remove the email subscription and the budget. [`settings.py`](dashboard_infra/settings.py) stops the synth instead, unless it's marked `-c allow_no_alerts=true` (CI's synth check, which is never deployed).
 - **Public by default.** On a public repository, pull-request comments and Actions logs are public too. The workflow masks the account ID and removes it and every email address ([`scrub_diff.py`](../scripts/scrub_diff.py)) before posting; the alert email is a GitHub **secret**, which is also masked in logs.
 
 **[`stack-diff.yml`](../.github/workflows/stack-diff.yml)** posts the diff of both stacks as a comment on every pull request that touches the stacks or the code the data-check Lambda bundles, and updates it on each push. It skips itself until the `AWS_DIFF_ROLE_ARN` variable is set.
@@ -334,7 +336,7 @@ Design decisions:
 1. **Plan** (no approval needed): the template diff, with the Diff role, written to the run's summary page so you can read it before approving. It warns if the merge also changed `HipKneeDashboardCi`, which you deploy yourself.
 2. **Deploy** waits in the `production` environment until you approve it (**Actions → Deploy stack → the run → Review deployments**). Then it:
    - creates a CloudFormation change set through CDK's deploy role. Nothing changes yet.
-   - runs the **replacement guard** ([`check_change_set.py`](../scripts/check_change_set.py)). It refuses, and deletes the change set, if a bucket, the user pool or its domain, the limits table, the KMS key, the CloudFront distribution or the dead-letter queue would be replaced, might be replaced, or would be removed. If CloudFormation found nothing to change (it marks such a change set FAILED, not deleted), it removes it, says so and skips the next step. A change set that failed for any other reason fails the job, with the reason.
+   - runs the **replacement guard** ([`check_change_set.py`](../scripts/check_change_set.py)). It refuses, and deletes the change set, if a bucket, the user pool or its domain, the limits table, the KMS key, the CloudFront distribution or the dead-letter queue would be replaced, might be replaced, or would be removed. The same goes for resources whose loss breaks something without an error: the alert topic, its email subscription and the budget (alerts would stop), the GitHub OIDC provider (every CI role trusts it), and the upload page's app client and API (new IDs would leave the `UPLOAD_*` variables stale). If CloudFormation found nothing to change (it marks such a change set FAILED, not deleted), it removes it, says so and skips the next step. A change set that failed for any other reason fails the job, with the reason.
    - executes the change set and waits for the update to finish. A failure rolls back on its own.
    - runs the **smoke test** with the Smoke role and adds its results to the summary.
 

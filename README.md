@@ -15,6 +15,71 @@ An interactive dashboard of complications, complication readmissions and length 
 - **How it's built:** every measure is computed ahead of time by a tested Python package (more than 100 tests plus a slow simulation check, a 90% coverage gate in CI, pinned dependencies, linted with ruff; the AWS code has its own test suite). The page is one HTML file with a Content-Security-Policy and an integrity-checked chart library, deployed to GitHub Pages and to AWS (S3 + CloudFront, defined in CDK, deployed through OIDC, security-checked by cdk-nag).
 - **How it treats data:** synthetic data only in public. Real builds can only be written to a git-ignored folder, every build stops on data errors, and small counts can be hidden to meet the CMS rule.
 
+![Dashboard screenshot](docs/dashboard.png)
+
+## For reviewers: a five-minute tour
+
+1. **[The live dashboard](https://dito-84.github.io/hip-knee-replacement-outcomes-dashboard/)** (1 minute). Switch to one hospital, then to knee only. Every rate carries an interval, and hospitals are compared on a funnel plot rather than ranked, because at about 3% a real difference takes thousands of surgeries to detect.
+2. **[How the measures are counted](#how-the-measures-are-counted)** and the **[measure crosswalk](docs/measure-crosswalk.md)** (1 minute): what the rebuild found in the original measures, and each measure against its public CMS definition. Every fix has a test with a small made-up case where the right answer is known, as in [`tests/test_original_formula_errors.py`](tests/test_original_formula_errors.py) and [`tests/test_messy_exports.py`](tests/test_messy_exports.py).
+3. **The two diagrams below** (1 minute): how a change reaches production, and what runs on AWS.
+4. **[The deploy pipeline](.github/workflows/deploy-stack.yml)** (1 minute): no stored AWS keys, an approval gate, a change set checked by a [replacement guard](scripts/check_change_set.py) before it runs, and a [smoke test](scripts/smoke_upload.py) against the live stack after. A pull request that changes the stacks gets its template diff as a comment, scrubbed of account IDs ([example](https://github.com/Dito-84/hip-knee-replacement-outcomes-dashboard/pull/45)).
+5. **[The Well-Architected review](docs/well-architected.md)** (1 minute): the design against all six pillars, the incidents and what each taught, and the trade-off I chose to phase rather than rush.
+
+The upload demo is by invitation, with a personal, time-limited account: ask me for one.
+
+## How a change ships
+
+Every change goes through a pull request, CI, and a squash-merge into a protected `main`. The website deploys at once; a change to the AWS stack waits for my approval, then runs as a CloudFormation change set that a guard checks before anything changes.
+
+```mermaid
+flowchart LR
+    pr[Pull request] --> ci{"CI: tests, cdk synth<br/>+ cdk-nag, stack diff<br/>posted on the PR"}
+    ci -- "squash-merge<br/>(protected main)" --> main[main]
+    main -- "OIDC · deploys at once" --> site["Website:<br/>GitHub Pages, S3 + CloudFront"]
+    main -- "OIDC · waits for approval<br/>in production" --> cs["Change set +<br/>replacement guard"]
+    cs --> stack[Main stack updated]
+    stack --> smoke["Smoke test:<br/>8 checks against the live stack"]
+```
+
+## What runs on AWS
+
+```mermaid
+flowchart TB
+    visitor([Visitor]) --> cf["CloudFront<br/>CSP, security headers"] --> site[("S3 site bucket")]
+
+    reviewer([Invited reviewer]) -- "1 · sign in" --> cognito["Cognito<br/>accounts that expire"]
+    reviewer -- "2 · ask to upload, 4 · poll the result (JWT)" --> api["HTTP API<br/>JWT authorizer"]
+    api --> presign["Presign Lambda<br/>daily limits in DynamoDB"]
+    reviewer -- "3 · presigned POST, ≤ 5 MB" --> intake[("S3 intake bucket")]
+    intake -- ObjectCreated --> check["Data-check Lambda<br/>synthetic-only guard → quality checks → drift"]
+    check -- reads --> ref[("Reference snapshot<br/>read-only")]
+    check -- "counts-only report; file deleted" --> intake
+    api --> results["Results Lambda"] --> intake
+
+    check -. errors .-> alarms["8 CloudWatch alarms"]
+    cf -. "5xx rate" .-> alarms
+    api -. "5xx, function errors" .-> alarms
+    alarms --> sns["SNS topic<br/>customer managed KMS key"] --> email([Email: counts only])
+```
+
+All of it costs about **$1 a month** at demo volume, nearly all of it the KMS key the alerts need; everything else fits in free tiers. Details, with the reasoning for each choice: [infra/README.md](infra/README.md).
+
+## Key decisions
+
+| Decision | Instead of | Why | Trade-off |
+|---|---|---|---|
+| Rates per surgery (records collapsed to one row per stay) | Per record, as the original did | A patient with two complications isn't two surgeries | The data has no patient ID, so a stay is keyed by hospital, birth date and dates; a quality check catches records that don't match |
+| Observed rates, plus observed-vs-expected by age group and procedure | Imitating the CMS risk-standardized rate | The data has none of the Medicare risk factors the CMS model uses | Not comparable with published CMS rates, and labeled so |
+| A static page with every measure precomputed | A BI tool or an app server | Nothing to run or patch; serves from a CDN for pennies | Filters are limited to the combinations computed at build time |
+| Lambda as a zip package (183 MB) | A container image | No Docker in the pipeline, and the deploy Mac is Intel while Lambda runs ARM64 | 250 MB ceiling; a heavier library would need images built on an ARM64 runner |
+| Cognito accounts and a JWT-authorized HTTP API | IAM users or Identity Center | Reviewers never become AWS principals | HTTP APIs can't use WAF; throttling and daily limits in DynamoDB stand in |
+| Presigned POST | Presigned PUT | S3 itself enforces the 5 MB limit and the exact key | A form upload instead of a plain PUT |
+| Change sets with a replacement guard, behind an approval | `cdk deploy` | See exactly what CloudFormation will do before it runs | CDK's bootstrap still gives CloudFormation admin rights; scoping it is phased ([why](docs/well-architected.md)) |
+| Drift alerts gated on adjusted p < 0.01 | A PSI threshold alone | Sparse columns crossed PSI 0.25 by chance | Less sensitive on very small batches |
+| A customer managed KMS key for the alert topic | The AWS managed `alias/aws/sns` key | CloudWatch alarms can't publish to a topic using that key | About $1 a month, nearly the whole bill |
+
+## How the dashboard is built
+
 ```mermaid
 flowchart LR
     data[(Discharge file)] --> load[Load and clean]
@@ -26,8 +91,6 @@ flowchart LR
     page --> pages[GitHub Pages]
     page --> aws[S3 + CloudFront]
 ```
-
-![Dashboard screenshot](docs/dashboard.png)
 
 ## Background
 
@@ -143,8 +206,9 @@ With [dstoolkit](https://github.com/Dito-84/dstoolkit) installed (`pip install -
 
 [`infra/`](infra/README.md) defines the [AWS version of this site](https://d12lu6oeqxy46k.cloudfront.net) in AWS CDK (Python):
 - A private S3 bucket served through CloudFront, deployed from GitHub Actions through OIDC, so no AWS keys are stored in GitHub.
+- Deployed from CI: GitHub OIDC roles with no stored keys, an approval gate in a `production` environment, a CloudFormation change set checked by a replacement guard, and a smoke test of the live stack after every deploy. The CI roles live in a second stack that only I deploy, by hand.
 - An S3-triggered Lambda that runs the data-quality checks on an uploaded file, checks it for drift against a read-only reference snapshot (type changes, distribution shift, more blanks, new codes, added or removed columns), and emails a counts-only summary. CloudWatch alarms and a dead-letter queue make sure a failed check is reported rather than silent. A synthetic-only guard rejects and deletes any file without the synthetic marker.
-- Authenticated uploads for invited reviewers: Cognito sign-in (admin-created, time-limited accounts), an API Gateway HTTP API with a JWT authorizer that issues presigned S3 POSTs, daily upload limits in DynamoDB, and a page that shows the check's counts-only result. Four sample batches show each outcome. Real patient data is never uploaded, and the page and the Lambda both refuse files that aren't marked synthetic.
+- Authenticated uploads for invited reviewers: Cognito sign-in (admin-created, time-limited accounts), an API Gateway HTTP API with a JWT authorizer that issues presigned S3 POSTs, daily upload limits in DynamoDB, and a page that shows the check's counts-only result. Four sample batches show each outcome. Real patient data is never uploaded, and the page and the Lambda both refuse files that aren't marked synthetic. Expired accounts are deleted automatically a week after they end.
 
 It includes least-privilege IAM, automated cdk-nag security checks in CI, and a budget alert. Its README explains the design choices and what would change for real patient data.
 
@@ -154,7 +218,7 @@ It includes least-privilege IAM, automated cdk-nag security checks in CI, and a 
 
 ## Built with
 
-Python (pandas, NumPy), Plotly.js, pytest, ruff, uv, GitHub Actions and GitHub Pages; on AWS, CDK, S3, CloudFront, Lambda, SNS, IAM (OIDC), Cognito, API Gateway and DynamoDB.
+Python (pandas, NumPy, SciPy), Plotly.js, pytest, ruff, uv, GitHub Actions and GitHub Pages; on AWS, CDK, CloudFormation, S3, CloudFront, Lambda, API Gateway, Cognito, DynamoDB, SQS, SNS, KMS, CloudWatch, EventBridge and IAM (OIDC).
 
 ## License
 

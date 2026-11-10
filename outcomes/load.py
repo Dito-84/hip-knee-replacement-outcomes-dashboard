@@ -35,9 +35,37 @@ def _read_raw(path, sheet=None):
     raise DataFormatError(f"Unsupported file type: {path.suffix} (use .csv or .xlsx)")
 
 
-def _yes_no(series):
-    text = series.astype(str).str.strip().str.lower()
-    return text.isin(["yes", "y", "true", "1"])
+YES = {"yes", "y", "true", "1", "1.0"}
+NO = {"no", "n", "false", "0", "0.0"}
+
+
+def _yes_no(series, required=False):
+    """(True/False per row, how many values were neither Yes nor No).
+
+    Blank means No in an optional column (no complication, no readmission). Anything that isn't
+    a recognizable Yes or No, and a blank in a required column, is counted rather than guessed:
+    "Unknown" used to read as No, so an Excluded (Yes/No) of "Unknown" counted the stay as included.
+    """
+    text = series.fillna("").astype(str).str.strip().str.lower()
+    allowed = YES | NO | (set() if required else {""})
+    return text.isin(YES), int((~text.isin(allowed)).sum())
+
+
+# Dates in the export are US month/day/year text in a CSV, or real dates in Excel. ISO dates
+# (2020-03-10) are unambiguous, so they're read too. Anything else is counted, not guessed:
+# pandas would otherwise infer one format from the first value and blank out the rest.
+DATE_FORMATS = ("%m/%d/%Y", "ISO8601")
+
+
+def _dates(series):
+    """(dates, how many filled values couldn't be read as a date)."""
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    for fmt in DATE_FORMATS:
+        todo = parsed.isna()
+        if todo.any():
+            parsed[todo] = pd.to_datetime(series[todo], format=fmt, errors="coerce")
+    filled = series.notna() & (series.astype("string").str.strip() != "")
+    return parsed, int((filled & parsed.isna()).sum())
 
 
 def _table(path, sheet=None):
@@ -79,17 +107,22 @@ def load_raw(path, sheet=None):
 
 
 def load(path, sheet=None):
-    """Load and clean a discharge file. Returns one row per complication record."""
+    """Load and clean a discharge file. Returns one row per complication record.
+
+    `attrs["unreadable"]` counts, per column, the filled values that couldn't be read as a date or
+    a Yes/No; quality.run_checks() reports them as errors.
+    """
     df = _table(path, sheet)
     df = df[[c for c in df.columns if c in COLUMNS]]
 
     for col in COLUMNS:
         if col not in df:
             df[col] = pd.NA
+    unreadable = {}   # column -> how many filled values couldn't be read (see quality.py)
     for col in DATE_COLUMNS:
-        df[col] = pd.to_datetime(df[col], errors="coerce")
+        df[col], unreadable[col] = _dates(df[col])
     for col in YES_NO_COLUMNS:
-        df[col] = _yes_no(df[col].fillna(""))
+        df[col], unreadable[col] = _yes_no(df[col], required=COLUMNS[col][1])
     for col in COUNT_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
     for col in ("hospital", "complication", "inclusion_exclusion", "measure"):
@@ -97,6 +130,9 @@ def load(path, sheet=None):
 
     bad = df["admission_date"].isna() | df["discharge_date"].isna()
     if bad.any():
-        raise DataFormatError(f"{int(bad.sum())} rows are missing an admission or discharge date")
+        raise DataFormatError(f"{int(bad.sum())} rows are missing an admission or discharge date, "
+                              "or have one that isn't a date")
 
-    return df[list(COLUMNS)].reset_index(drop=True)
+    out = df[list(COLUMNS)].reset_index(drop=True)
+    out.attrs["unreadable"] = {col: n for col, n in unreadable.items() if n}
+    return out

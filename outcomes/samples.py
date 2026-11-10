@@ -6,7 +6,8 @@ gets exactly that outcome:
 - clean:            passes, with no drift alerts
 - quality-problems: fails the quality checks (five discharges dated before admission)
 - drift:            passes the guard but raises drift alerts (counts sent as Yes/No,
-                    a new Measure code on 10% of rows, Excluded left blank on 20%)
+                    a new Measure code on 10% of rows, Excluded left blank on 20%), and fails
+                    the quality checks on two of those: no procedure, and blank Excluded
 - no-marker:        the clean batch without the synthetic marker column, which the
                     synthetic-only guard rejects and deletes
 
@@ -53,7 +54,8 @@ def _no_marker() -> pd.DataFrame:
 SAMPLES = {
     "clean": ("Clean batch", "Passes every check", _clean),
     "quality-problems": ("Quality problems", "Fails: five discharges dated before admission", _quality_problems),
-    "drift": ("Drifted batch", "Raises drift alerts, plus a quality error from the miscoded counts", _drift),
+    "drift": ("Drifted batch", "Raises drift alerts, plus quality errors from the miscoded counts and blank Excluded",
+              _drift),
     "no-marker": ("No synthetic marker", "Rejected and deleted by the synthetic-only guard", _no_marker),
 }
 

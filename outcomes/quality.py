@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from .metrics import _key
+from .schema import COLUMNS, DATE_COLUMNS, YES_NO_COLUMNS
 
 
 @dataclass
@@ -31,6 +32,17 @@ def run_checks(records: pd.DataFrame) -> list[Finding]:
         count = int(mask_or_count.sum()) if hasattr(mask_or_count, "sum") else int(mask_or_count)
         if count:
             findings.append(Finding(check, severity, count, message.format(n=count)))
+
+    # Values load() couldn't read. Each would otherwise become a blank (a date) or a No (a Yes/No),
+    # and quietly change a rate: an unreadable readmission date drops the readmission.
+    unreadable = r.attrs.get("unreadable", {})
+    for col in DATE_COLUMNS:
+        add("unreadable date", "error", unreadable.get(col, 0),
+            f"{{n}} value(s) in {COLUMNS[col][0]} aren't dates (month/day/year or year-month-day).")
+    for col in YES_NO_COLUMNS:
+        what = "Yes or No" if COLUMNS[col][1] else "Yes, No or blank"
+        add("unreadable Yes/No", "error", unreadable.get(col, 0),
+            f"{{n}} value(s) in {COLUMNS[col][0]} aren't {what}.")
 
     add("discharge before admission", "error",
         r["discharge_date"] < r["admission_date"],
@@ -61,10 +73,35 @@ def run_checks(records: pd.DataFrame) -> list[Finding]:
     death_without_date = (r["complication"] == "Death") & r["death_date"].isna()
     add("death without date", "warning", death_without_date,
         "{n} death complication(s) have no death date.")
+    add("death date on another complication", "warning",
+        r["death_date"].notna() & (r["complication"] != "Death").fillna(True),
+        "{n} record(s) have a death date but aren't a Death complication; mortality counts Death records only.")
+    add("death before admission", "warning", r["death_date"] < r["admission_date"],
+        "{n} death date(s) are before the admission date.")
+
+    after_discharge = r["had_complication"] & ~r["during_index_stay"] & r["complication"].notna() \
+        & (r["complication"] != "") & (r["complication"] != "Death")
+    add("complication after discharge without a date", "warning",
+        after_discharge & r["complication_admit_date"].isna(),
+        "{n} complication(s) after discharge have no admit date, so they can't count as readmissions.")
 
     # The measures collapse rows to one per stay; extra rows for a stay should be
     # flagged as additional complication records. Unflagged repeats suggest true duplicates.
     key = _key(r)
+    # A stay is identified by hospital, birth date and stay dates. An additional record whose key
+    # matches no primary record (a blank or different birth date, a different discharge date)
+    # becomes a stay of its own, and the surgery is counted twice.
+    has_primary = (~r["additional_record"]).groupby(key).transform("any")
+    add("additional record without its stay", "error", r["additional_record"] & ~has_primary,
+        "{n} additional complication record(s) match no primary record for the same stay (hospital, "
+        "birth date, admission and discharge dates), so they'd be counted as extra surgeries.")
+    differs = pd.Series(False, index=r.index)
+    for col in ("n_tha", "n_tka", "excluded"):
+        differs |= r.groupby(key)[col].transform("nunique") > 1
+    add("stay details differ between records", "warning", differs,
+        "{n} record(s) belong to a stay whose records disagree on the procedure counts or Excluded; "
+        "the stay uses the largest value.")
+
     repeats = key.duplicated(keep="first")
     add("unflagged repeat rows", "warning", repeats & ~r["additional_record"],
         "{n} row(s) repeat an earlier stay but aren't flagged as additional complication records; "

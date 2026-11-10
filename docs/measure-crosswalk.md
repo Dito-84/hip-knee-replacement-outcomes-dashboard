@@ -29,7 +29,7 @@ How each measure on the dashboard relates to the public CMS definition, and wher
 
 ## Issues found in the original Qlik measures
 
-Rebuilding the dashboard and reviewing the original formulas turned up six issues. The first two are deliberate changes to how the rebuild counts. The other four were errors in individual original formulas. None of them carried over, because the rebuild computes every rate from one filtered set of stays rather than from separate formulas for each combination. Each one has a test with a small made-up case (`tests/test_outcomes.py`).
+Rebuilding the dashboard and reviewing the original formulas turned up six issues. The first two are deliberate changes to how the rebuild counts. The other four were errors in individual original formulas. None of them carried over, because the rebuild computes every rate from one filtered set of stays rather than from separate formulas for each combination. Each one has a test with a small made-up case (`tests/test_measures.py` and `tests/test_original_formula_errors.py`).
 
 | # | Issue in the original | In the rebuild | Test |
 |---|---|---|---|

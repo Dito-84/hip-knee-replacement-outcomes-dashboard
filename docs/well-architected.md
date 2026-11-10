@@ -40,7 +40,7 @@ The pattern was the same each time: the failure surfaced from a live check, and 
 |---|---|---|
 | A stateful resource **must** be replaced (a bucket rename, a new user pool) | Run **Deploy stack** by hand with **Allow replacement** ticked. The guard reports the replacement instead of refusing it | The `production` approval; the plan's diff; retained buckets and deletion protection on the pool |
 | CI itself is broken (GitHub Actions down, a broken role or workflow) | **Break-glass:** deploy `HipKneeDashboard` from the laptop (`cdk diff`, then `cdk deploy`, with the same `-c` options) | `cdk diff` reviewed before deploying, by the same person who approves CI deploys; CloudFormation's automatic rollback |
-| The CI roles need to change | Deploy `HipKneeDashboardCi` from the laptop. CI never deploys its own permissions | The plan job warns when that stack differs from what's deployed |
+| The CI roles need to change | Deploy `HipKneeDashboardCi` from the laptop. No workflow deploys it. That's a process rule, not an IAM limit: CDK's deploy role, which the Deploy role can assume, can update any stack in the account (see the bootstrap trade-off below) | The plan job warns when that stack differs from what's deployed; the `production` approval |
 | A bad deploy is already live | Revert the commit and merge, which deploys the previous template after approval. For the site alone, restore an earlier object version | Versioned site bucket; the smoke test after the redeploy |
 
 Using an escape hatch means writing down why, in the pull request or the commit.
@@ -66,7 +66,7 @@ Using an escape hatch means writing down why, in the pull request or the commit.
 
 **Known trade-off: CDK's bootstrap execution role has `AdministratorAccess`**
 
-CloudFormation deploys both stacks through the execution role that `cdk bootstrap` created, and by default that role has `AdministratorAccess`. So **approving a deploy is approving admin-level changes**, whether the deploy runs from CI or from my laptop. The Deploy role itself can only assume CDK's roles and inspect change sets, but anything a template asks for, CloudFormation can do.
+CloudFormation deploys both stacks through the execution role that `cdk bootstrap` created, and by default that role has `AdministratorAccess`. So **approving a deploy is approving admin-level changes**, whether the deploy runs from CI or from my laptop. The Deploy role itself can only assume CDK's roles and inspect change sets, but anything a template asks for, CloudFormation can do. And CDK's deploy role, in the default bootstrap template, can create and execute change sets on **any** stack in the account, not just the main one, so an approved job could also deploy `HipKneeDashboardCi`.
 
 *How it's contained today:*
 - Only jobs in the GitHub `production` environment can assume the Deploy role, and that environment waits for my approval and accepts only `main`.
@@ -79,16 +79,16 @@ CloudFormation deploys both stacks through the execution role that `cdk bootstra
 - That deserves its own tested change, not a side effect of adding CI.
 
 *The plan, as a separate phase:*
-1. **Write the policy.** A customer managed execution policy covering only the services these stacks use: S3, CloudFront, Lambda, API Gateway, Cognito, DynamoDB, SNS, SQS, KMS, CloudWatch and Logs, Budgets, and IAM. Its IAM actions apply only to roles created with a project permissions boundary (the `iam:PermissionsBoundary` condition key). That boundary caps any role the stacks create, so nothing they create can exceed it.
+1. **Write the policy.** A customer managed execution policy covering only the services these stacks use: S3, CloudFront, Lambda, API Gateway, Cognito, DynamoDB, SNS, SQS, KMS, CloudWatch and Logs, Budgets, and IAM. Its IAM actions apply only to roles created with a project permissions boundary (the `iam:PermissionsBoundary` condition key). That boundary caps any role the stacks create, so nothing they create can exceed it. The policy must also deny changes to the boundary itself, to the bootstrap roles and their policies, and to the `CDKToolkit` stack, or a template could widen them again. CDK's bootstrap has its own permissions-boundary options (`--custom-permissions-boundary`), which are worth using rather than building this by hand.
 2. **Bootstrap a second environment alongside the current one.** Use a new qualifier (`cdk bootstrap --qualifier scoped --cloudformation-execution-policies <policy ARN>`), so the existing one is untouched.
 3. **Prove it.** Deploy a copy of both stacks under the new qualifier, including a change that creates a role, and fix the policy until a full deploy and an update succeed. The smoke test must pass against the copy.
-4. **Switch.** Point the real stacks at the new qualifier, update the Deploy role to assume the new bootstrap roles, then remove the old bootstrap.
+4. **Switch.** Point the real stacks at the new qualifier, update the Deploy role to assume the new bootstrap roles, then remove the old bootstrap. Limit the new deploy role's CloudFormation permissions to the main stack, so CI can no longer deploy its own roles.
 
 If that phase never happens, the risk stays where it is today: bounded by who can approve a deploy, which is one person. That makes MFA on that person's GitHub and AWS accounts a requirement, not an option.
 
 **Other decisions**
 - **No AWS WAF.** It can't be attached to an HTTP API, so it couldn't protect the upload API. On CloudFront it would protect only static files. It would also cost more than the whole budget. CloudFront includes AWS Shield Standard.
-- **Cognito's Plus tier (threat protection) isn't used:** no free tier, and sign-up is closed.
+- **Cognito's Plus tier (threat protection) isn't used, because it isn't needed, not because of cost.** It has no free tier, but at $0.02 per monthly active user a handful of reviewers would cost cents. Its protections (compromised-credential checks, adaptive authentication) matter for open sign-up at scale; here sign-up is closed, every account is created by me and expires within 30 days.
 - **MFA is optional** for reviewers, using authenticator apps. Their accounts are short-lived and can reach nothing but the upload API.
 
 **Next.** The execution-role phase above. A CloudTrail trail, since the first trail's management events are free, and IAM Access Analyzer for external access, which is also free. A custom domain with an ACM certificate, which would allow a TLS 1.2 minimum on CloudFront and remove that cdk-nag suppression.
@@ -141,7 +141,7 @@ Multi-Region would cost more than it protects for a portfolio site.
 - **Log retention:** one month.
 - **CloudFront** uses its cheapest price class. ARM64 Lambda costs about 20% less than x86.
 - **A $5 budget** emails at 80% of actual spend and at 100% of forecast spend.
-- **Decisions made on cost:** no WAF (more than the whole budget), no Cognito Plus tier, no NAT gateway or VPC (nothing needs one).
+- **Decisions made on cost:** no WAF (more than the whole budget), no NAT gateway or VPC (nothing needs one).
 
 **Estimate.** About $1 a month at demo volume, nearly all of it the KMS key. The site, the data check, uploads, alarms and the CI pipeline fit within free tiers or cost fractions of a cent. GitHub Actions minutes are free for public repositories.
 

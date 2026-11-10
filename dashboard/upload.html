@@ -77,6 +77,19 @@
     <section id="result" hidden aria-live="polite"></section>
   </section>
 
+  <section id="privacy">
+    <h2>What's kept about you</h2>
+    <ul class="muted">
+      <li><strong>Your email address</strong>, in your Cognito account: until 7 days after your access ends, when a
+          daily clean-up deletes the account. You can ask for it to be deleted sooner.</li>
+      <li><strong>Your IP address and an anonymous account ID</strong>, in the upload API's access logs for 30 days,
+          and your IP address in the website's access logs for 90 days. They're for security and troubleshooting.</li>
+      <li><strong>Your uploads:</strong> deleted as soon as they're checked. The counts-only result is kept 7 days, so the
+          page can show it.</li>
+    </ul>
+    <p class="muted">Nothing is shared or used for anything else.</p>
+  </section>
+
   <footer>
     <p>How this works: sign-in through Amazon Cognito, a presigned S3 upload through an API Gateway HTTP API, and an
        S3-triggered Lambda that runs the synthetic-only guard, the quality checks and the drift check. Nothing from the

@@ -139,7 +139,7 @@ sequenceDiagram
 
 **Results.** The results function reads `reports/web/<caller's sub>/<id>.csv.json`, with the sub taken from the verified token, never from the request, so one reviewer can't read another's result. It returns an explicit subset of the already counts-only report, so a field added to reports later doesn't reach the browser without a decision. It has no `s3:ListBucket`, so S3 answers AccessDenied for a result that doesn't exist yet. The function treats that as "not ready" (404).
 
-**Monitoring.** Error alarms on the presign and results functions and on API 5xx responses, and a crash alarm on the pre-authentication trigger. Cognito refuses a sign-in only through an exception from the trigger, which Lambda counts as an error, so that alarm counts logged errors other than `AccountExpired` (a metric filter) and stays quiet when an expired account is refused. All of them email the alert topic like the data-check alarms (6 alarms in all, inside CloudWatch's free 10). API access logs record the route, status, caller's sub and source IP, kept a month. Website uploads that pass aren't emailed; rejected ones are.
+**Monitoring.** Error alarms on the presign and results functions and on API 5xx responses, and a crash alarm on the pre-authentication trigger. Cognito refuses a sign-in only through an exception from the trigger, which Lambda counts as an error, so that alarm counts logged errors other than `AccountExpired` (a metric filter) and stays quiet when an expired account is refused. A daily clean-up function has its own error alarm, and the website has one too: CloudFront 5xx responses over 10% of at least 10 requests, in 2 of 3 five-minute periods, so one failed request on a quiet site doesn't email. (Its metrics are defined by hand: CloudFront publishes them with `DistributionId` and `Region=Global`, and CDK's own helpers leave out `Region`, which would give an alarm that never sees data.) All of them email the alert topic like the data-check alarms (8 alarms in all, inside CloudWatch's free 10). API access logs record the route, status, caller's sub and source IP, kept a month. Website uploads that pass aren't emailed; rejected ones are.
 
 **Why no AWS WAF.** WAF can't be attached to an HTTP API (it supports REST APIs, CloudFront, ALB, AppSync, Cognito user pools and a few others), so it couldn't protect the upload API itself. It would cost $5 a month for the web ACL plus $1 per rule, more than the whole stack's $5 budget. What it would add is covered here by invitation-only sign-in, expiring accounts, throttling, daily limits and the presigned policy, and CloudFront includes AWS Shield Standard. Worth revisiting only if sign-up were opened to the public.
 
@@ -162,6 +162,7 @@ python ../scripts/demo_user.py delete reviewer@example.com
 - **disable** stops sign-in at once and revokes the account's sessions. A token already issued lasts at most 30 minutes more.
 - **To give someone more time,** delete the account and create it again: the end date can't be changed, by design.
 - **delete** removes the account and its email address. Do this after a demo: reviewers' email addresses are personal data, and nothing else needs them.
+- **The daily clean-up** deletes any account 7 days after its end date, so an address isn't kept just because nobody remembered. `list` shows when each expired account will go. The week's grace means an account can still be recreated with the same address if a reviewer asks for more time. Accounts with no end date (there shouldn't be any) are left for you and counted in the function's log. The upload page tells reviewers what's kept about them and for how long; a test checks those figures against the stack.
 
 There are no shared credentials anywhere: each reviewer has their own account, and their own password that nobody else sees.
 
@@ -307,6 +308,25 @@ The app has **two stacks**, so every `cdk` command names the one it means:
 Merging to `main` deploys the website straight away. If the merge also changed the main stack, or the code its Lambdas bundle, the **Deploy stack** workflow starts and waits for your approval (below). Deploying `HipKneeDashboard` from your own machine is now the break-glass route, for when CI itself is broken: run `cdk diff HipKneeDashboard`, then `cdk deploy HipKneeDashboard`, with the same `-c` options as your first deploy. They aren't saved in `cdk.json`, so leaving one out removes the email and budget alerts.
 
 Both stacks have **termination protection**: `cdk destroy` fails until you turn it off.
+
+### When an alarm emails
+
+| Alarm | What to do |
+|---|---|
+| `DataCheckErrors` | Read the `DataCheckLogs` log group (errors are logged by type only). Lambda retries twice; a website upload is deleted on the first attempt, so the reviewer sees an error and can upload again. |
+| `DataCheckGaveUp` | An upload failed every retry and its S3 event is in the `FailedChecksQueue`. Read the message (the event, never the file), fix the cause, then delete the message. Redriving it only helps for a command-line upload under `incoming/` less than 7 days old: website uploads are already deleted, and older files have expired. The alarm emails only on entering ALARM and can stay there while the queue isn't empty, so empty it, or a second failure may not email. |
+| `PresignErrors`, `ResultsErrors`, `PreAuthErrors`, `ApiServerErrors` | The upload path is failing; read the function's log group or `ApiAccessLogs`, then run the smoke test. `PreAuthErrors` failing closed means nobody can sign in. |
+| `CleanupErrors` | The daily clean-up couldn't delete some expired accounts (the log has the count). Run `demo_user.py list` and delete them by hand; it retries tomorrow anyway. |
+| `SiteServerErrors` | The website is failing for visitors. Check the CloudFront distribution and the site bucket; `deploy-aws.yml`'s last run; restore an earlier object version if a deploy broke it. |
+
+**Alarm drill.** Most alarms have never fired, so nothing proves their email arrives. [`alarm_drill.py`](../scripts/alarm_drill.py) lists the stack's alarms and can set one, or all, to ALARM by hand; CloudWatch then emails as for a real breach, and the alarm returns to OK at its next evaluation. It needs your own profile (CI's roles can't set alarm states):
+
+```bash
+python ../scripts/alarm_drill.py          # list them, and flag any that can't email
+python ../scripts/alarm_drill.py --all    # expect one email per alarm
+```
+
+Run it after a deploy that adds or changes an alarm, and every few months.
 
 ### Deploying from CI
 

@@ -28,6 +28,8 @@ from aws_cdk import aws_apigatewayv2 as apigw
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_events as events
+from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
@@ -47,6 +49,7 @@ PRESIGN_EXPIRES_SECONDS = 300
 PER_USER_DAILY = 20
 ALL_USERS_DAILY = 200
 TOKEN_MINUTES = 30
+CLEANUP_GRACE_DAYS = 7   # expired accounts are deleted this long after their valid_until
 
 
 class Uploads(Construct):
@@ -220,10 +223,24 @@ class Uploads(Construct):
                 "latencyMs": "$context.responseLatency", "authError": "$context.authorizer.error",
             }))
 
+        # ---------- Clean-up: expired accounts don't keep a reviewer's email address ----------
+        self.cleanup = self._function(
+            "AccountCleanupFunction", "account_cleanup", "handler.handler",
+            f"Deletes demo accounts {CLEANUP_GRACE_DAYS} days after their custom:valid_until",
+            environment={"USER_POOL_ID": self.user_pool.user_pool_id, "GRACE_DAYS": str(CLEANUP_GRACE_DAYS)},
+            timeout=Duration.minutes(1))
+        self.cleanup.add_to_role_policy(iam.PolicyStatement(
+            sid="DeleteExpiredAccounts", actions=["cognito-idp:ListUsers", "cognito-idp:AdminDeleteUser"],
+            resources=[self.user_pool.user_pool_arn]))
+        events.Rule(self, "DailyCleanup", description="Deletes demo accounts a week after they expire",
+                    schedule=events.Schedule.cron(minute="17", hour="7"),   # 2:17 am New York in winter
+                    targets=[targets.LambdaFunction(self.cleanup, retry_attempts=2)])
+
         # ---------- Alarms (the stack wires them to the alert topic) ----------
         self.alarms = [
             self._error_alarm("PresignErrors", self.presign, "The upload-signing function failed."),
             self._error_alarm("ResultsErrors", self.results, "The upload-results function failed."),
+            self._error_alarm("CleanupErrors", self.cleanup, "The daily account clean-up failed."),
             self._pre_auth_crash_alarm(),
             cloudwatch.Alarm(
                 self, "ApiServerErrors",
@@ -245,7 +262,7 @@ class Uploads(Construct):
                   description="GitHub variable UPLOAD_AUTH_DOMAIN")
 
     def _function(self, id: str, folder: str, handler: str, description: str,
-                  environment: dict | None = None) -> lambda_.Function:
+                  environment: dict | None = None, timeout: Duration | None = None) -> lambda_.Function:
         """A small function with its own role and log group, and no AWS managed policies."""
         log_group = logs.LogGroup(self, f"{id}Logs", retention=logs.RetentionDays.ONE_MONTH,
                                   removal_policy=RemovalPolicy.DESTROY)
@@ -254,7 +271,7 @@ class Uploads(Construct):
         return lambda_.Function(
             self, id, description=description, runtime=RUNTIME, architecture=ARCHITECTURE,
             handler=handler, code=lambda_.Code.from_asset(str(LAMBDA_DIR / folder)),
-            memory_size=256, timeout=Duration.seconds(10), role=role, log_group=log_group,
+            memory_size=256, timeout=timeout or Duration.seconds(10), role=role, log_group=log_group,
             environment=environment or {})
 
     def _pre_auth_crash_alarm(self) -> cloudwatch.Alarm:

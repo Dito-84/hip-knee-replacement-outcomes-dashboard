@@ -42,6 +42,24 @@ def expiry(days: int, now: datetime | None = None) -> str:
     return f"{last.isoformat()}T23:59:59Z"
 
 
+CLEANUP_GRACE_DAYS = 7   # keep in step with CLEANUP_GRACE_DAYS in infra/dashboard_infra/uploads.py
+
+
+def lifecycle(valid_until: str | None, now: datetime | None = None) -> str:
+    """Where the account is: valid, expired (and when the daily clean-up deletes it), or no expiry."""
+    if not valid_until:
+        return "no expiry date (can't sign in; the clean-up leaves it for you to delete)"
+    try:
+        end = datetime.strptime(valid_until, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return f"unreadable expiry {valid_until!r} (can't sign in; delete it)"
+    now = now or datetime.now(UTC)
+    if end >= now:
+        return f"valid until {valid_until}"
+    deleted = (end + timedelta(days=CLEANUP_GRACE_DAYS)).strftime("%Y-%m-%d")
+    return f"EXPIRED {valid_until}; the daily clean-up deletes it after {deleted}"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("action", choices=["create", "list", "disable", "delete"])
@@ -80,7 +98,7 @@ def main(argv=None):
                 attrs = {a["Name"]: a["Value"] for a in user.get("Attributes", [])}
                 state = "enabled" if user["Enabled"] else "disabled"
                 print(f"{attrs.get('email', user['Username'])}\t{state}\t{user['UserStatus']}\t"
-                      f"valid until {attrs.get('custom:valid_until', '(none)')}")
+                      f"{lifecycle(attrs.get('custom:valid_until'))}")
 
 
 if __name__ == "__main__":
